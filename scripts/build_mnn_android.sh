@@ -80,7 +80,7 @@ fi
 BUILD_DIR="$MNN_ROOT/project/android/build_64"
 mkdir -p "$BUILD_DIR"
 
-DEFAULT_FLAGS="-DMNN_LOW_MEMORY=true -DMNN_CPU_WEIGHT_DEQUANT_GEMM=true -DMNN_BUILD_LLM=true -DMNN_SUPPORT_TRANSFORMER_FUSE=true -DMNN_ARM82=true -DMNN_USE_LOGCAT=true -DMNN_OPENCL=true -DLLM_SUPPORT_VISION=true -DMNN_BUILD_OPENCV=true -DMNN_IMGCODECS=true -DLLM_SUPPORT_AUDIO=true -DMNN_BUILD_AUDIO=true -DMNN_BUILD_DIFFUSION=ON -DMNN_SEP_BUILD=OFF -DMNN_BUILD_TEST=OFF -DMNN_BUILD_BENCHMARK=OFF -DCMAKE_SHARED_LINKER_FLAGS='-Wl,-z,max-page-size=16384' -DCMAKE_INSTALL_PREFIX=."
+DEFAULT_FLAGS="-DMNN_LOW_MEMORY=true -DMNN_CPU_WEIGHT_DEQUANT_GEMM=true -DMNN_BUILD_LLM=true -DMNN_SUPPORT_TRANSFORMER_FUSE=true -DMNN_ARM82=true -DMNN_SME2=ON -DMNN_KLEIDIAI=ON -DMNN_KLEIDIAI_DEFAULT_ON=ON -DMNN_USE_LOGCAT=true -DMNN_OPENCL=true -DLLM_SUPPORT_VISION=true -DMNN_BUILD_OPENCV=true -DMNN_IMGCODECS=true -DLLM_SUPPORT_AUDIO=true -DMNN_BUILD_AUDIO=true -DMNN_BUILD_DIFFUSION=ON -DMNN_SEP_BUILD=OFF -DMNN_BUILD_TEST=OFF -DMNN_BUILD_BENCHMARK=OFF -DCMAKE_SHARED_LINKER_FLAGS='-Wl,-z,max-page-size=16384' -DCMAKE_INSTALL_PREFIX=."
 
 pushd "$BUILD_DIR" >/dev/null
 export ANDROID_NDK
@@ -115,3 +115,18 @@ echo "MNN build completed."
 echo "MNN source root: $MNN_ROOT"
 echo "Header root: $HEADER_ROOT"
 echo "Runtime library: $LIB_PATH"
+
+cat > "$BUILD_DIR/mnn_build_profile.json" <<EOF
+{
+  "androidAbi": "arm64-v8a",
+  "mnnSme2Enabled": true,
+  "mnnKleidiAiEnabled": true,
+  "mnnKleidiAiDefaultOn": true,
+  "cpuSmeCoreNum": 2,
+  "cpuSme2NeonDivisionRatio": 41,
+  "source": "scripts/build_mnn_android.sh",
+  "notes": "Built for Android arm64-v8a with MNN_SME2=ON, MNN_KLEIDIAI=ON, and MNN_KLEIDIAI_DEFAULT_ON=ON."
+}
+EOF
+
+echo "Build profile: $BUILD_DIR/mnn_build_profile.json"

@@ -33,6 +33,10 @@ android {
         buildConfigField("String", "QWEN_1_5B_TEXT_LLM_CONFIG_SHA256", "\"${project.stringBuildConfigProperty("model.qwen_local_1_5b_text.llm_config_sha256")}\"")
         buildConfigField("String", "QWEN_1_5B_TEXT_CONFIG_URL", "\"${project.stringBuildConfigProperty("model.qwen_local_1_5b_text.config_url")}\"")
         buildConfigField("String", "QWEN_1_5B_TEXT_CONFIG_SHA256", "\"${project.stringBuildConfigProperty("model.qwen_local_1_5b_text.config_sha256")}\"")
+        buildConfigField("String", "QWEN_1_5B_TEXT_VISUAL_MNN_URL", "\"${project.stringBuildConfigProperty("model.qwen_local_1_5b_text.visual_mnn_url")}\"")
+        buildConfigField("String", "QWEN_1_5B_TEXT_VISUAL_MNN_SHA256", "\"${project.stringBuildConfigProperty("model.qwen_local_1_5b_text.visual_mnn_sha256")}\"")
+        buildConfigField("String", "QWEN_1_5B_TEXT_VISUAL_WEIGHT_URL", "\"${project.stringBuildConfigProperty("model.qwen_local_1_5b_text.visual_weight_url")}\"")
+        buildConfigField("String", "QWEN_1_5B_TEXT_VISUAL_WEIGHT_SHA256", "\"${project.stringBuildConfigProperty("model.qwen_local_1_5b_text.visual_weight_sha256")}\"")
 
         buildConfigField("String", "QWEN_3B_MM_TOKENIZER_URL", "\"${project.stringBuildConfigProperty("model.qwen_local_3b_multimodal.tokenizer_url")}\"")
         buildConfigField("String", "QWEN_3B_MM_TOKENIZER_SHA256", "\"${project.stringBuildConfigProperty("model.qwen_local_3b_multimodal.tokenizer_sha256")}\"")
@@ -47,12 +51,19 @@ android {
         buildConfig = true
     }
 
+    androidResources {
+        noCompress += listOf("mnn", "weight", "txt", "json", "onnx", "wav")
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
 
     packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
@@ -75,10 +86,13 @@ dependencies {
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.foundation)
     implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.compose.material.icons.extended)
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.mlkit.text.recognition.chinese)
     implementation(libs.mlkit.image.labeling)
+    implementation(files("libs/sherpa-onnx-1.13.2.aar"))
+    implementation("com.github.yalantis:ucrop:2.2.10")
     debugImplementation(libs.androidx.compose.ui.tooling)
 }

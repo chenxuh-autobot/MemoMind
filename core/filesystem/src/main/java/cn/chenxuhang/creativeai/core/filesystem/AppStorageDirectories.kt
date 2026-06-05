@@ -11,6 +11,7 @@ class AppStorageDirectories(
     val memosDir: File = File(rootDir, "memos").apply { mkdirs() }
     val cacheDir: File = File(rootDir, "cache").apply { mkdirs() }
     val recordingsDir: File = File(rootDir, "recordings").apply { mkdirs() }
+    val capturedImagesDir: File = File(rootDir, "captured_images").apply { mkdirs() }
     val taskIndexFile: File = File(rootDir, "tasks.json").apply {
         parentFile?.mkdirs()
         if (!exists()) writeText("[]")

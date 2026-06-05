@@ -1,0 +1,10 @@
+{
+  "androidAbi": "arm64-v8a",
+  "mnnSme2Enabled": true,
+  "mnnKleidiAiEnabled": true,
+  "mnnKleidiAiDefaultOn": true,
+  "cpuSmeCoreNum": 2,
+  "cpuSme2NeonDivisionRatio": 41,
+  "source": "scripts/build_mnn_android.sh",
+  "notes": "Built for Android arm64-v8a with MNN_SME2=ON, MNN_KLEIDIAI=ON, and MNN_KLEIDIAI_DEFAULT_ON=ON."
+}

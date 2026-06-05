@@ -11,6 +11,7 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        maven("https://jitpack.io")
     }
 }
 
@@ -30,4 +31,3 @@ include(":feature:history")
 include(":ai:orchestrator")
 include(":ai:modelmanager")
 include(":ai:mnn")
-

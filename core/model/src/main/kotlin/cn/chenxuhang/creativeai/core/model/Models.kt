@@ -32,8 +32,12 @@ data class MemoTask(
     val status: String,
     val summary: String = "",
     val processingMode: ProcessingMode = ProcessingMode.LOCAL_ONLY,
+    val sourceText: String = "",
+    val sourceSections: List<SourceInputSection> = emptyList(),
     val sourceChannels: List<String> = emptyList(),
     val assetRefs: List<String> = emptyList(),
+    val isArchived: Boolean = false,
+    val archiveFolder: String? = null,
 )
 
 data class Attachment(
@@ -152,6 +156,8 @@ data class MnnSessionConfig(
     val threadCount: Int,
     val enableLowMemoryMode: Boolean,
     val enableMultimodalPath: Boolean,
+    val cpuSmeCoreCount: Int = 2,
+    val cpuSme2NeonDivisionRatio: Int = 41,
 )
 
 data class ModelProbeResult(
@@ -178,4 +184,12 @@ data class TextGenerationResult(
     val backendName: String,
     val outputText: String? = null,
     val errorMessage: String? = null,
+)
+
+data class CpuAccelerationProbeResult(
+    val isArm64: Boolean,
+    val hasSme: Boolean,
+    val hasSme2: Boolean,
+    val detectionSource: String,
+    val rawHints: String? = null,
 )

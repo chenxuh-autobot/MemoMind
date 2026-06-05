@@ -4,6 +4,7 @@ import cn.chenxuhang.creativeai.core.model.MnnSessionConfig
 import cn.chenxuhang.creativeai.core.model.ModelProbeResult
 import cn.chenxuhang.creativeai.core.model.SessionOpenResult
 import cn.chenxuhang.creativeai.core.model.TextGenerationResult
+import cn.chenxuhang.creativeai.core.model.CpuAccelerationProbeResult
 
 enum class MnnRuntimeState {
     UNINITIALIZED,
@@ -17,9 +18,18 @@ interface MnnRuntime {
     fun describe(): String
     fun runtimeVersion(): String
     fun supportsRealMnn(): Boolean
+    fun cpuAccelerationProbe(): CpuAccelerationProbeResult
     fun probeModelDirectory(modelId: String?, modelDirectory: String): ModelProbeResult
     fun openSession(config: MnnSessionConfig): SessionOpenResult
     fun generateText(config: MnnSessionConfig, prompt: String, maxNewTokens: Int): TextGenerationResult
+    fun generateVisionText(
+        config: MnnSessionConfig,
+        prompt: String,
+        imageRgbBytes: ByteArray,
+        width: Int,
+        height: Int,
+        maxNewTokens: Int,
+    ): TextGenerationResult
 }
 
 class StubMnnRuntime : MnnRuntime {
@@ -32,6 +42,16 @@ class StubMnnRuntime : MnnRuntime {
     override fun runtimeVersion(): String = "stub-runtime/0.1"
 
     override fun supportsRealMnn(): Boolean = false
+
+    override fun cpuAccelerationProbe(): CpuAccelerationProbeResult {
+        return CpuAccelerationProbeResult(
+            isArm64 = false,
+            hasSme = false,
+            hasSme2 = false,
+            detectionSource = "stub",
+            rawHints = "Native runtime unavailable.",
+        )
+    }
 
     override fun probeModelDirectory(modelId: String?, modelDirectory: String): ModelProbeResult {
         return ModelProbeResult(
@@ -64,6 +84,22 @@ class StubMnnRuntime : MnnRuntime {
             runtimeVersion = runtimeVersion(),
             backendName = "stub",
             errorMessage = "Stub runtime cannot generate text.",
+        )
+    }
+
+    override fun generateVisionText(
+        config: MnnSessionConfig,
+        prompt: String,
+        imageRgbBytes: ByteArray,
+        width: Int,
+        height: Int,
+        maxNewTokens: Int,
+    ): TextGenerationResult {
+        return TextGenerationResult(
+            success = false,
+            runtimeVersion = runtimeVersion(),
+            backendName = "stub",
+            errorMessage = "Stub runtime cannot generate vision text.",
         )
     }
 }
@@ -118,6 +154,19 @@ class NativeBackedMnnRuntime(
         return status.state == MnnRuntimeState.NATIVE_READY && nativeSupportsRealMnn()
     }
 
+    override fun cpuAccelerationProbe(): CpuAccelerationProbeResult {
+        if (status.state != MnnRuntimeState.NATIVE_READY) {
+            return CpuAccelerationProbeResult(
+                isArm64 = false,
+                hasSme = false,
+                hasSme2 = false,
+                detectionSource = "native-unavailable",
+                rawHints = status.errorMessage,
+            )
+        }
+        return nativeCpuAccelerationProbe()
+    }
+
     override fun probeModelDirectory(modelId: String?, modelDirectory: String): ModelProbeResult {
         if (status.state != MnnRuntimeState.NATIVE_READY) {
             return ModelProbeResult(
@@ -150,6 +199,8 @@ class NativeBackedMnnRuntime(
             threadCount = config.threadCount,
             enableLowMemoryMode = config.enableLowMemoryMode,
             enableMultimodalPath = config.enableMultimodalPath,
+            cpuSmeCoreCount = config.cpuSmeCoreCount,
+            cpuSme2NeonDivisionRatio = config.cpuSme2NeonDivisionRatio,
         )
     }
 
@@ -173,7 +224,42 @@ class NativeBackedMnnRuntime(
             threadCount = config.threadCount,
             enableLowMemoryMode = config.enableLowMemoryMode,
             enableMultimodalPath = config.enableMultimodalPath,
+            cpuSmeCoreCount = config.cpuSmeCoreCount,
+            cpuSme2NeonDivisionRatio = config.cpuSme2NeonDivisionRatio,
             prompt = prompt,
+            maxNewTokens = maxNewTokens,
+        )
+    }
+
+    override fun generateVisionText(
+        config: MnnSessionConfig,
+        prompt: String,
+        imageRgbBytes: ByteArray,
+        width: Int,
+        height: Int,
+        maxNewTokens: Int,
+    ): TextGenerationResult {
+        if (status.state != MnnRuntimeState.NATIVE_READY) {
+            return TextGenerationResult(
+                success = false,
+                runtimeVersion = runtimeVersion(),
+                backendName = "native-unavailable",
+                errorMessage = status.errorMessage ?: "Native runtime unavailable.",
+            )
+        }
+        return nativeGenerateVisionText(
+            modelId = config.modelId,
+            modelDirectory = config.modelDirectory,
+            backendName = config.backend.name,
+            threadCount = config.threadCount,
+            enableLowMemoryMode = config.enableLowMemoryMode,
+            enableMultimodalPath = config.enableMultimodalPath,
+            cpuSmeCoreCount = config.cpuSmeCoreCount,
+            cpuSme2NeonDivisionRatio = config.cpuSme2NeonDivisionRatio,
+            prompt = prompt,
+            imageRgbBytes = imageRgbBytes,
+            width = width,
+            height = height,
             maxNewTokens = maxNewTokens,
         )
     }
@@ -182,6 +268,7 @@ class NativeBackedMnnRuntime(
 
     external fun nativeRuntimeVersion(): String
     external fun nativeSupportsRealMnn(): Boolean
+    external fun nativeCpuAccelerationProbe(): CpuAccelerationProbeResult
     external fun nativeProbeModelDirectory(modelDirectory: String): ModelProbeResult
     external fun nativeOpenSession(
         modelId: String,
@@ -190,6 +277,8 @@ class NativeBackedMnnRuntime(
         threadCount: Int,
         enableLowMemoryMode: Boolean,
         enableMultimodalPath: Boolean,
+        cpuSmeCoreCount: Int,
+        cpuSme2NeonDivisionRatio: Int,
     ): SessionOpenResult
 
     external fun nativeGenerateText(
@@ -199,7 +288,25 @@ class NativeBackedMnnRuntime(
         threadCount: Int,
         enableLowMemoryMode: Boolean,
         enableMultimodalPath: Boolean,
+        cpuSmeCoreCount: Int,
+        cpuSme2NeonDivisionRatio: Int,
         prompt: String,
+        maxNewTokens: Int,
+    ): TextGenerationResult
+
+    external fun nativeGenerateVisionText(
+        modelId: String,
+        modelDirectory: String,
+        backendName: String,
+        threadCount: Int,
+        enableLowMemoryMode: Boolean,
+        enableMultimodalPath: Boolean,
+        cpuSmeCoreCount: Int,
+        cpuSme2NeonDivisionRatio: Int,
+        prompt: String,
+        imageRgbBytes: ByteArray,
+        width: Int,
+        height: Int,
         maxNewTokens: Int,
     ): TextGenerationResult
 }

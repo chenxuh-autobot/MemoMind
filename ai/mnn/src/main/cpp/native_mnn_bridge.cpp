@@ -4,6 +4,15 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <algorithm>
+#include <cctype>
+
+#if defined(__aarch64__)
+#include <sys/auxv.h>
+#ifdef __linux__
+#include <asm/hwcap.h>
+#endif
+#endif
 
 #ifdef HAS_REAL_MNN
 #include "MNN/Interpreter.hpp"
@@ -25,6 +34,20 @@ std::string jstringToStdString(JNIEnv* env, jstring value) {
     if (utfChars != nullptr) {
         env->ReleaseStringUTFChars(value, utfChars);
     }
+    return result;
+}
+
+std::vector<uint8_t> jbyteArrayToUint8Vector(JNIEnv* env, jbyteArray value) {
+    std::vector<uint8_t> result;
+    if (value == nullptr) {
+        return result;
+    }
+    const jsize length = env->GetArrayLength(value);
+    if (length <= 0) {
+        return result;
+    }
+    result.resize(static_cast<size_t>(length));
+    env->GetByteArrayRegion(value, 0, length, reinterpret_cast<jbyte*>(result.data()));
     return result;
 }
 
@@ -113,6 +136,29 @@ jobject newTextGenerationResult(
             errorValue);
 }
 
+jobject newCpuAccelerationProbeResult(
+        JNIEnv* env,
+        bool isArm64,
+        bool hasSme,
+        bool hasSme2,
+        const std::string& detectionSource,
+        const std::string& rawHints) {
+    jclass resultClass = requireClass(env, "cn/chenxuhang/creativeai/core/model/CpuAccelerationProbeResult");
+    jmethodID ctor = env->GetMethodID(
+            resultClass,
+            "<init>",
+            "(ZZZLjava/lang/String;Ljava/lang/String;)V");
+    jobject rawHintsValue = rawHints.empty() ? nullptr : env->NewStringUTF(rawHints.c_str());
+    return env->NewObject(
+            resultClass,
+            ctor,
+            isArm64,
+            hasSme,
+            hasSme2,
+            env->NewStringUTF(detectionSource.c_str()),
+            rawHintsValue);
+}
+
 std::string runtimeVersionForCurrentBuild() {
 #ifdef HAS_REAL_MNN_LLM
     return kBridgeVersionRealLlm;
@@ -148,11 +194,20 @@ std::string jsonBool(bool value) {
     return value ? "true" : "false";
 }
 
+std::string toLower(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return value;
+}
+
 std::string buildRuntimeConfigJson(
         const std::filesystem::path& modelDirectory,
         const std::string& backendName,
         int threadCount,
-        bool enableLowMemoryMode) {
+        bool enableLowMemoryMode,
+        int cpuSmeCoreCount,
+        int cpuSme2NeonDivisionRatio) {
     const std::filesystem::path mmapDirectory = modelDirectory / ".mnn-cache";
     std::error_code errorCode;
     std::filesystem::create_directories(mmapDirectory, errorCode);
@@ -164,9 +219,34 @@ std::string buildRuntimeConfigJson(
     config << "\"memory\":\"" << (enableLowMemoryMode ? "low" : "high") << "\",";
     config << "\"precision\":\"low\",";
     config << "\"use_mmap\":" << jsonBool(enableLowMemoryMode) << ",";
+    config << "\"cpu_sme_core_num\":" << cpuSmeCoreCount << ",";
+    config << "\"cpu_sme2_neon_division_ratio\":" << cpuSme2NeonDivisionRatio << ",";
     config << "\"tmp_path\":\"" << mmapDirectory.string() << "\"";
     config << "}";
     return config.str();
+}
+
+std::string readTextFile(
+        const std::filesystem::path& path) {
+    std::ifstream input(path);
+    if (!input.is_open()) {
+        return "";
+    }
+    std::stringstream buffer;
+    buffer << input.rdbuf();
+    return buffer.str();
+}
+
+std::string detectCpuHintText() {
+    return readTextFile("/proc/cpuinfo").substr(0, 4000);
+}
+
+bool modelRequiresVisualAssets(
+        const std::filesystem::path& root) {
+    const std::string config = readTextFile(root / "llm_config.json");
+    return config.find("\"is_visual\"") != std::string::npos
+            && (config.find("\"is_visual\": true") != std::string::npos
+            || config.find("\"is_visual\":true") != std::string::npos);
 }
 
 bool validateModelDirectoryForSession(
@@ -175,10 +255,14 @@ bool validateModelDirectoryForSession(
     const bool hasTokenizer = std::filesystem::exists(root / "tokenizer.txt")
             || std::filesystem::exists(root / "tokenizer.json");
     const bool hasRuntimeConfig = std::filesystem::exists(root / "config.json");
+    const bool hasLlmConfig = std::filesystem::exists(root / "llm_config.json");
     const bool hasGraph = std::filesystem::exists(root / "llm.mnn")
             || std::filesystem::exists(root / "model.mnn");
     const bool hasWeightData = !std::filesystem::exists(root / "llm.mnn")
             || std::filesystem::exists(root / "llm.mnn.weight");
+    const bool requiresVisualAssets = hasLlmConfig && modelRequiresVisualAssets(root);
+    const bool hasVisualGraph = !requiresVisualAssets || std::filesystem::exists(root / "visual.mnn");
+    const bool hasVisualWeight = !requiresVisualAssets || std::filesystem::exists(root / "visual.mnn.weight");
 
     if (!hasTokenizer) {
         errorMessage = "Missing tokenizer.txt or tokenizer.json under " + root.string();
@@ -194,6 +278,18 @@ bool validateModelDirectoryForSession(
     }
     if (!hasWeightData) {
         errorMessage = "Missing llm.mnn.weight under " + root.string();
+        return false;
+    }
+    if (!hasLlmConfig) {
+        errorMessage = "Missing llm_config.json under " + root.string();
+        return false;
+    }
+    if (!hasVisualGraph) {
+        errorMessage = "Missing visual.mnn under " + root.string();
+        return false;
+    }
+    if (!hasVisualWeight) {
+        errorMessage = "Missing visual.mnn.weight under " + root.string();
         return false;
     }
     return true;
@@ -224,6 +320,50 @@ Java_cn_chenxuhang_creativeai_ai_mnn_NativeBackedMnnRuntime_nativeSupportsRealMn
 
 extern "C"
 JNIEXPORT jobject JNICALL
+Java_cn_chenxuhang_creativeai_ai_mnn_NativeBackedMnnRuntime_nativeCpuAccelerationProbe(
+        JNIEnv* env,
+        jobject /* this */) {
+    bool isArm64 = false;
+    bool hasSme = false;
+    bool hasSme2 = false;
+    std::string detectionSource = "proc-cpuinfo";
+    const std::string rawHints = detectCpuHintText();
+
+#if defined(__aarch64__)
+    isArm64 = true;
+#if defined(HWCAP2_SME) || defined(HWCAP2_SME2)
+    const unsigned long hwcap2 = getauxval(AT_HWCAP2);
+    detectionSource = "getauxval";
+#ifdef HWCAP2_SME
+    hasSme = (hwcap2 & HWCAP2_SME) != 0;
+#endif
+#ifdef HWCAP2_SME2
+    hasSme2 = (hwcap2 & HWCAP2_SME2) != 0;
+#endif
+#endif
+#endif
+
+    if (!hasSme || !hasSme2) {
+        const std::string loweredHints = toLower(rawHints);
+        if (!hasSme && loweredHints.find("sme") != std::string::npos) {
+            hasSme = true;
+        }
+        if (!hasSme2 && loweredHints.find("sme2") != std::string::npos) {
+            hasSme2 = true;
+        }
+    }
+
+    return newCpuAccelerationProbeResult(
+            env,
+            isArm64,
+            hasSme,
+            hasSme2,
+            detectionSource,
+            rawHints);
+}
+
+extern "C"
+JNIEXPORT jobject JNICALL
 Java_cn_chenxuhang_creativeai_ai_mnn_NativeBackedMnnRuntime_nativeProbeModelDirectory(
         JNIEnv* env,
         jobject /* this */,
@@ -239,8 +379,12 @@ Java_cn_chenxuhang_creativeai_ai_mnn_NativeBackedMnnRuntime_nativeProbeModelDire
             std::filesystem::exists(root / "model.mnn"));
     const bool hasWeightData = !std::filesystem::exists(root / "llm.mnn") ||
             std::filesystem::exists(root / "llm.mnn.weight");
+    const bool hasLlmConfig = exists && std::filesystem::exists(root / "llm_config.json");
+    const bool requiresVisualAssets = hasLlmConfig && modelRequiresVisualAssets(root);
+    const bool hasVisualGraph = !requiresVisualAssets || std::filesystem::exists(root / "visual.mnn");
+    const bool hasVisualWeight = !requiresVisualAssets || std::filesystem::exists(root / "visual.mnn.weight");
     const bool hasRuntimeConfig = exists && std::filesystem::exists(root / "config.json");
-    const bool hasWeights = hasGraph && hasWeightData;
+    const bool hasWeights = hasGraph && hasWeightData && hasVisualGraph && hasVisualWeight;
     const bool hasConfig = hasRuntimeConfig;
 
     std::vector<std::string> missingFiles;
@@ -248,7 +392,9 @@ Java_cn_chenxuhang_creativeai_ai_mnn_NativeBackedMnnRuntime_nativeProbeModelDire
     if (!hasGraph) missingFiles.emplace_back("llm.mnn|model.mnn");
     if (!hasWeightData) missingFiles.emplace_back("llm.mnn.weight");
     if (!hasRuntimeConfig) missingFiles.emplace_back("config.json");
-    if (exists && !std::filesystem::exists(root / "llm_config.json")) missingFiles.emplace_back("llm_config.json");
+    if (!hasLlmConfig) missingFiles.emplace_back("llm_config.json");
+    if (!hasVisualGraph) missingFiles.emplace_back("visual.mnn");
+    if (!hasVisualWeight) missingFiles.emplace_back("visual.mnn.weight");
 
     return newModelProbeResult(
             env,
@@ -270,7 +416,9 @@ Java_cn_chenxuhang_creativeai_ai_mnn_NativeBackedMnnRuntime_nativeOpenSession(
         jstring backendName,
         jint threadCount,
         jboolean enableLowMemoryMode,
-        jboolean enableMultimodalPath) {
+        jboolean enableMultimodalPath,
+        jint cpuSmeCoreCount,
+        jint cpuSme2NeonDivisionRatio) {
     const std::string modelIdValue = jstringToStdString(env, modelId);
     const std::string directoryValue = jstringToStdString(env, modelDirectory);
     const std::string backendNameValue = jstringToStdString(env, backendName);
@@ -307,7 +455,9 @@ Java_cn_chenxuhang_creativeai_ai_mnn_NativeBackedMnnRuntime_nativeOpenSession(
             root,
             backendNameValue,
             static_cast<int>(threadCount),
-            enableLowMemoryMode == JNI_TRUE);
+            enableLowMemoryMode == JNI_TRUE,
+            static_cast<int>(cpuSmeCoreCount),
+            static_cast<int>(cpuSme2NeonDivisionRatio));
     llm->set_config(runtimeConfig);
     const bool loaded = llm->load();
     const auto* context = llm->getContext();
@@ -367,6 +517,8 @@ Java_cn_chenxuhang_creativeai_ai_mnn_NativeBackedMnnRuntime_nativeGenerateText(
         jint threadCount,
         jboolean enableLowMemoryMode,
         jboolean enableMultimodalPath,
+        jint cpuSmeCoreCount,
+        jint cpuSme2NeonDivisionRatio,
         jstring prompt,
         jint maxNewTokens) {
     const std::string modelIdValue = jstringToStdString(env, modelId);
@@ -403,7 +555,9 @@ Java_cn_chenxuhang_creativeai_ai_mnn_NativeBackedMnnRuntime_nativeGenerateText(
             root,
             backendNameValue,
             static_cast<int>(threadCount),
-            enableLowMemoryMode == JNI_TRUE);
+            enableLowMemoryMode == JNI_TRUE,
+            static_cast<int>(cpuSmeCoreCount),
+            static_cast<int>(cpuSme2NeonDivisionRatio));
     llm->set_config(runtimeConfig);
     const bool loaded = llm->load();
     if (!loaded) {
@@ -462,5 +616,159 @@ Java_cn_chenxuhang_creativeai_ai_mnn_NativeBackedMnnRuntime_nativeGenerateText(
             backendLabelForCurrentBuild(),
             "",
             "Text generation requires MNN LLM headers and real LLM runtime support.");
+#endif
+}
+
+extern "C"
+JNIEXPORT jobject JNICALL
+Java_cn_chenxuhang_creativeai_ai_mnn_NativeBackedMnnRuntime_nativeGenerateVisionText(
+        JNIEnv* env,
+        jobject /* this */,
+        jstring modelId,
+        jstring modelDirectory,
+        jstring backendName,
+        jint threadCount,
+        jboolean enableLowMemoryMode,
+        jboolean enableMultimodalPath,
+        jint cpuSmeCoreCount,
+        jint cpuSme2NeonDivisionRatio,
+        jstring prompt,
+        jbyteArray imageRgbBytes,
+        jint width,
+        jint height,
+        jint maxNewTokens) {
+    const std::string modelIdValue = jstringToStdString(env, modelId);
+    const std::string directoryValue = jstringToStdString(env, modelDirectory);
+    const std::string backendNameValue = jstringToStdString(env, backendName);
+    const std::string promptValue = jstringToStdString(env, prompt);
+    const std::filesystem::path root(directoryValue);
+
+    std::string validationError;
+    if (!validateModelDirectoryForSession(root, validationError)) {
+        return newTextGenerationResult(
+                env,
+                false,
+                runtimeVersionForCurrentBuild(),
+                backendNameValue,
+                "",
+                validationError);
+    }
+
+#ifdef HAS_REAL_MNN_LLM
+    if (enableMultimodalPath != JNI_TRUE) {
+        return newTextGenerationResult(
+                env,
+                false,
+                runtimeVersionForCurrentBuild(),
+                backendNameValue,
+                "",
+                "Current model is not configured for multimodal vision generation.");
+    }
+
+    const std::vector<uint8_t> imageBytes = jbyteArrayToUint8Vector(env, imageRgbBytes);
+    const int pixelCount = static_cast<int>(imageBytes.size());
+    if (width <= 0 || height <= 0 || pixelCount != width * height * 3) {
+        return newTextGenerationResult(
+                env,
+                false,
+                runtimeVersionForCurrentBuild(),
+                backendNameValue,
+                "",
+                "Vision input image buffer is invalid.");
+    }
+
+    const std::filesystem::path runtimeConfigPath = root / "config.json";
+    auto* llm = MNN::Transformer::Llm::createLLM(runtimeConfigPath.string());
+    if (llm == nullptr) {
+        return newTextGenerationResult(
+                env,
+                false,
+                runtimeVersionForCurrentBuild(),
+                backendNameValue,
+                "",
+                "MNN LLM runtime failed to create vision generation session from config.json");
+    }
+
+    const std::string runtimeConfig = buildRuntimeConfigJson(
+            root,
+            backendNameValue,
+            static_cast<int>(threadCount),
+            enableLowMemoryMode == JNI_TRUE,
+            static_cast<int>(cpuSmeCoreCount),
+            static_cast<int>(cpuSme2NeonDivisionRatio));
+    llm->set_config(runtimeConfig);
+    const bool loaded = llm->load();
+    if (!loaded) {
+        const auto* context = llm->getContext();
+        const int statusCode = context == nullptr ? -999 : static_cast<int>(context->status);
+        MNN::Transformer::Llm::destroy(llm);
+        std::ostringstream error;
+        error << "MNN VL load() failed before generation. modelId=" << modelIdValue
+              << ", status=" << statusCode;
+        return newTextGenerationResult(
+                env,
+                false,
+                runtimeVersionForCurrentBuild(),
+                backendNameValue,
+                "",
+                error.str());
+    }
+
+    MNN::Transformer::MultimodalPrompt multimodalPrompt;
+    multimodalPrompt.prompt_template = promptValue;
+
+    MNN::Transformer::PromptImagePart imagePart;
+    imagePart.width = static_cast<int>(width);
+    imagePart.height = static_cast<int>(height);
+    imagePart.image_data = MNN::Express::_Const(
+            imageBytes.data(),
+            {static_cast<int>(height), static_cast<int>(width), 3},
+            MNN::Express::NHWC,
+            halide_type_of<uint8_t>());
+    multimodalPrompt.images["image_0"] = imagePart;
+
+    std::ostringstream output;
+    llm->response(multimodalPrompt, &output, nullptr, static_cast<int>(maxNewTokens));
+    const std::string generatedText = output.str();
+    const auto* context = llm->getContext();
+    const int statusCode = context == nullptr ? -999 : static_cast<int>(context->status);
+    MNN::Transformer::Llm::destroy(llm);
+
+    if (generatedText.empty()) {
+        std::ostringstream error;
+        error << "MNN VL generated empty output. status=" << statusCode;
+        return newTextGenerationResult(
+                env,
+                false,
+                runtimeVersionForCurrentBuild(),
+                backendNameValue,
+                "",
+                error.str());
+    }
+
+    return newTextGenerationResult(
+            env,
+            true,
+            runtimeVersionForCurrentBuild(),
+            backendLabelForCurrentBuild(),
+            generatedText,
+            "");
+#else
+    (void) modelIdValue;
+    (void) threadCount;
+    (void) enableLowMemoryMode;
+    (void) enableMultimodalPath;
+    (void) promptValue;
+    (void) maxNewTokens;
+    (void) imageRgbBytes;
+    (void) width;
+    (void) height;
+    return newTextGenerationResult(
+            env,
+            false,
+            runtimeVersionForCurrentBuild(),
+            backendLabelForCurrentBuild(),
+            "",
+            "Vision generation requires MNN multimodal runtime support.");
 #endif
 }

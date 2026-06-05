@@ -1,21 +1,35 @@
 package cn.chenxuhang.creativeai
 
 import android.Manifest
+import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
-import android.os.Build
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.OutlinedButton
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.AssignmentTurnedIn
+import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.DeveloperBoard
+import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.Memory
+import androidx.compose.material.icons.outlined.Article
+import androidx.compose.material.icons.outlined.SdStorage
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Summarize
+import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material.icons.outlined.AllInbox
+import androidx.compose.material3.Icon
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -31,18 +45,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import cn.chenxuhang.creativeai.ai.mnn.MnnPrebuiltLocator
+import androidx.core.content.FileProvider
 import cn.chenxuhang.creativeai.ai.mnn.NativeBackedMnnRuntime
-import cn.chenxuhang.creativeai.ai.mnn.StubMnnRuntime
 import cn.chenxuhang.creativeai.ai.modelmanager.InMemoryModelManager
-import cn.chenxuhang.creativeai.ai.modelmanager.ModelAssetOverride
 import cn.chenxuhang.creativeai.ai.modelmanager.ModelCatalogOverrides
-import cn.chenxuhang.creativeai.ai.modelmanager.ModelOverride
 import cn.chenxuhang.creativeai.ai.orchestrator.LocalFirstMemoOrchestrator
 import cn.chenxuhang.creativeai.ai.orchestrator.StructuredMemoTaskExecutionResult
 import cn.chenxuhang.creativeai.ai.orchestrator.StructuredMemoTaskExecutor
 import cn.chenxuhang.creativeai.ai.orchestrator.StructuredMemoTaskRequest
 import cn.chenxuhang.creativeai.feature.capture.CaptureRoute
+import cn.chenxuhang.creativeai.feature.capture.CaptureAssetItem
 import cn.chenxuhang.creativeai.feature.capture.CaptureUiState
 import cn.chenxuhang.creativeai.core.database.JsonFileMemoTaskLocalDataSource
 import cn.chenxuhang.creativeai.core.database.JsonFileStructuredMemoLocalDataSource
@@ -54,29 +66,39 @@ import cn.chenxuhang.creativeai.core.model.MnnSessionConfig
 import cn.chenxuhang.creativeai.core.model.ProcessingMode
 import cn.chenxuhang.creativeai.core.model.SourceInputChannel
 import cn.chenxuhang.creativeai.core.model.SourceInputSection
+import cn.chenxuhang.creativeai.core.model.StructuredMemo
 import cn.chenxuhang.creativeai.feature.history.HistoryRoute
+import cn.chenxuhang.creativeai.feature.history.HistoryArchiveGroup
 import cn.chenxuhang.creativeai.feature.history.HistoryTaskItem
 import cn.chenxuhang.creativeai.feature.history.HistoryUiState
 import cn.chenxuhang.creativeai.feature.home.HomeRoute
 import cn.chenxuhang.creativeai.feature.home.HomeUiState
 import cn.chenxuhang.creativeai.feature.home.ModelInstallItem
-import cn.chenxuhang.creativeai.feature.home.ReadinessItem
-import cn.chenxuhang.creativeai.feature.home.TaskRecordItem
+import cn.chenxuhang.creativeai.feature.home.SystemComponentItem
 import cn.chenxuhang.creativeai.feature.result.ResultAssetItem
+import cn.chenxuhang.creativeai.feature.result.AgentActionItem
 import cn.chenxuhang.creativeai.feature.result.ResultRoute
 import cn.chenxuhang.creativeai.feature.result.ResultSectionItem
 import cn.chenxuhang.creativeai.feature.result.ResultUiState
+import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.Email
+import androidx.compose.material.icons.outlined.Share
+import com.yalantis.ucrop.UCrop
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 private enum class AppScreen(
     val label: String,
 ) {
-    HOME("Home"),
-    CAPTURE("Capture"),
-    HISTORY("History"),
-    RESULT("Result"),
+    HOME("设置"),
+    CAPTURE("任务"),
+    HISTORY("历史"),
+    RESULT("结果"),
 }
 
 data class SelectedLocalAsset(
@@ -85,76 +107,47 @@ data class SelectedLocalAsset(
     val mimeTypeLabel: String,
 )
 
+private data class BundledModelSpec(
+    val modelId: String,
+    val assetDirectory: String,
+    val targetDirectory: File,
+    val requiredFiles: List<String>,
+    val bundleVersion: String,
+    val bundledInApk: Boolean = true,
+)
+
+private val VisionEnhancedModelIds = setOf(
+    "qwen-vl-2b-instruct-mnn",
+)
+
 @Composable
 fun CreativeAiApp() {
     val context = LocalContext.current
     val storage = remember(context) { AppStorageDirectories(context) }
+    val appPrefs = remember(context) {
+        context.getSharedPreferences("memomind_settings", Context.MODE_PRIVATE)
+    }
     val taskLocalStore = remember(storage.taskIndexFile) {
         JsonFileMemoTaskLocalDataSource(storage.taskIndexFile)
     }
     val memoLocalStore = remember(storage.memoIndexFile) {
         JsonFileStructuredMemoLocalDataSource(storage.memoIndexFile)
     }
-    val bootstrapModelDirectory = remember(storage) {
-        resolveBootstrapModelDirectory(storage.modelDir("qwen-local-1_5b-text"))
-    }
-    val modelOverrides = remember {
-        ModelCatalogOverrides(
-            models = mapOf(
-                "qwen-local-1_5b-text" to ModelOverride(
-                    assets = mapOf(
-                        "tokenizer.txt" to ModelAssetOverride(
-                            downloadUrl = BuildConfig.QWEN_1_5B_TEXT_TOKENIZER_TXT_URL,
-                            sha256 = BuildConfig.QWEN_1_5B_TEXT_TOKENIZER_TXT_SHA256,
-                        ),
-                        "llm.mnn" to ModelAssetOverride(
-                            downloadUrl = BuildConfig.QWEN_1_5B_TEXT_LLM_MNN_URL,
-                            sha256 = BuildConfig.QWEN_1_5B_TEXT_LLM_MNN_SHA256,
-                        ),
-                        "llm.mnn.weight" to ModelAssetOverride(
-                            downloadUrl = BuildConfig.QWEN_1_5B_TEXT_LLM_WEIGHT_URL,
-                            sha256 = BuildConfig.QWEN_1_5B_TEXT_LLM_WEIGHT_SHA256,
-                        ),
-                        "llm_config.json" to ModelAssetOverride(
-                            downloadUrl = BuildConfig.QWEN_1_5B_TEXT_LLM_CONFIG_URL,
-                            sha256 = BuildConfig.QWEN_1_5B_TEXT_LLM_CONFIG_SHA256,
-                        ),
-                        "config.json" to ModelAssetOverride(
-                            downloadUrl = BuildConfig.QWEN_1_5B_TEXT_CONFIG_URL,
-                            sha256 = BuildConfig.QWEN_1_5B_TEXT_CONFIG_SHA256,
-                        ),
-                    ),
-                ),
-                "qwen-local-3b-multimodal" to ModelOverride(
-                    assets = mapOf(
-                        "tokenizer.json" to ModelAssetOverride(
-                            downloadUrl = BuildConfig.QWEN_3B_MM_TOKENIZER_URL,
-                            sha256 = BuildConfig.QWEN_3B_MM_TOKENIZER_SHA256,
-                        ),
-                        "model.mnn" to ModelAssetOverride(
-                            downloadUrl = BuildConfig.QWEN_3B_MM_MODEL_URL,
-                            sha256 = BuildConfig.QWEN_3B_MM_MODEL_SHA256,
-                        ),
-                        "config.json" to ModelAssetOverride(
-                            downloadUrl = BuildConfig.QWEN_3B_MM_CONFIG_URL,
-                            sha256 = BuildConfig.QWEN_3B_MM_CONFIG_SHA256,
-                        ),
-                    ),
-                ),
-            ),
+    val modelDirectories = remember(storage) {
+        mapOf(
+            "qwen-vl-2b-instruct-mnn" to storage.modelDir("qwen-vl-2b-instruct-mnn"),
         )
     }
+    val modelOverrides = remember {
+        ModelCatalogOverrides.Empty
+    }
     val modelManager = remember {
-        InMemoryModelManager.bootstrapDefaults(overrides = modelOverrides).apply {
-            markInstalled(
-                modelId = "qwen-local-1_5b-text",
-                localDirectory = bootstrapModelDirectory.absolutePath,
-            )
-        }
+        InMemoryModelManager.bootstrapDefaults(overrides = modelOverrides)
     }
     val orchestrator = remember { LocalFirstMemoOrchestrator(modelManager) }
     val mnnRuntime = remember { NativeBackedMnnRuntime() }
-    val fallbackRuntime = remember { StubMnnRuntime() }
+    val bundledMnnBuildProfile = remember(context) { context.loadBundledMnnBuildProfile() }
+    val cpuAccelerationProbe = remember(mnnRuntime) { mnnRuntime.cpuAccelerationProbe() }
     val taskExecutor = remember {
         StructuredMemoTaskExecutor(
             runtime = mnnRuntime,
@@ -174,43 +167,104 @@ fun CreativeAiApp() {
     }
     val plan = remember { orchestrator.plan(deviceProfile, wantsVision = true, wantsAudio = true) }
     val capabilityReport = plan.deviceCapabilityReport
-    val prebuiltLayout = remember {
-        MnnPrebuiltLocator.inspect(
-            rootDirectory = "ai/mnn/src/main/cpp/third_party/mnn",
-        )
-    }
-    val installPlan = remember(modelManager, bootstrapModelDirectory) {
-        modelManager.installPlan("qwen-local-1_5b-text", bootstrapModelDirectory.absolutePath)
-    }
-    val installStatus = remember(modelManager, bootstrapModelDirectory) {
-        modelManager.validateInstallation("qwen-local-1_5b-text", bootstrapModelDirectory.absolutePath)
-    }
-    val modelProbe = remember(mnnRuntime, bootstrapModelDirectory) {
-        mnnRuntime.probeModelDirectory(
-            modelId = "qwen-local-1_5b-text",
-            modelDirectory = bootstrapModelDirectory.absolutePath,
-        )
-    }
-    val sessionOpen = remember(mnnRuntime, bootstrapModelDirectory) {
-        mnnRuntime.openSession(
-            MnnSessionConfig(
-                modelId = "qwen-local-1_5b-text",
-                modelDirectory = bootstrapModelDirectory.absolutePath,
-                backend = InferenceBackend.CPU,
-                threadCount = 4,
-                enableLowMemoryMode = true,
-                enableMultimodalPath = false,
+    val bundledModelSpecs = remember(storage, modelDirectories) {
+        listOf(
+            BundledModelSpec(
+                modelId = "qwen-vl-2b-instruct-mnn",
+                assetDirectory = "models/qwen-vl-2b-instruct-mnn",
+                targetDirectory = modelDirectories.getValue("qwen-vl-2b-instruct-mnn"),
+                requiredFiles = listOf(
+                    "tokenizer.txt",
+                    "llm.mnn",
+                    "llm.mnn.weight",
+                    "llm_config.json",
+                    "config.json",
+                    "visual.mnn",
+                    "visual.mnn.weight",
+                ),
+                bundleVersion = "qwen-vl-2b-instruct-mnn-v1",
+                bundledInApk = true,
             ),
         )
     }
-    val generationConfig = remember(bootstrapModelDirectory) {
+    var bundledModelResults by remember { mutableStateOf<Map<String, BundledModelBootstrapResult>>(emptyMap()) }
+    var modelBootstrapEpoch by remember { mutableStateOf(0) }
+    var selectedModelId by remember {
+        mutableStateOf(
+            appPrefs.getString("selected_model_id", "qwen-vl-2b-instruct-mnn")
+                ?.takeIf { it in modelDirectories.keys }
+                ?: "qwen-vl-2b-instruct-mnn",
+        )
+    }
+    val smeCoreCount = bundledMnnBuildProfile?.cpuSmeCoreNum ?: 2
+    val smeDivisionRatio = bundledMnnBuildProfile?.cpuSme2NeonDivisionRatio ?: 41
+    val currentModelDirectory = remember(modelDirectories, selectedModelId) {
+        modelDirectories.getValue(selectedModelId)
+    }
+    val currentModelSpec = remember(bundledModelSpecs, selectedModelId) {
+        bundledModelSpecs.first { it.modelId == selectedModelId }
+    }
+    val currentModelUsesVisionPath = remember(currentModelSpec) {
+        currentModelSpec.requiredFiles.any { it == "visual.mnn" || it == "visual.mnn.weight" }
+    }
+    val installPlan = remember(modelManager, currentModelDirectory, selectedModelId, modelBootstrapEpoch) {
+        modelManager.installPlan(selectedModelId, currentModelDirectory.absolutePath)
+    }
+    val installStatus = remember(modelManager, currentModelDirectory, selectedModelId, modelBootstrapEpoch) {
+        modelManager.validateInstallation(selectedModelId, currentModelDirectory.absolutePath)
+    }
+    val isBundledModelReady = bundledModelResults[selectedModelId]?.success == true
+    val modelProbe = remember(mnnRuntime, currentModelDirectory, selectedModelId, modelBootstrapEpoch, isBundledModelReady, currentModelSpec.requiredFiles) {
+        if (isBundledModelReady) {
+            mnnRuntime.probeModelDirectory(
+                modelId = selectedModelId,
+                modelDirectory = currentModelDirectory.absolutePath,
+            )
+        } else {
+            cn.chenxuhang.creativeai.core.model.ModelProbeResult(
+                modelId = selectedModelId,
+                modelDirectory = currentModelDirectory.absolutePath,
+                exists = currentModelDirectory.exists(),
+                hasTokenizer = false,
+                hasWeights = false,
+                hasConfig = false,
+                missingFiles = currentModelSpec.requiredFiles,
+            )
+        }
+    }
+    val sessionOpen = remember(mnnRuntime, currentModelDirectory, selectedModelId, modelBootstrapEpoch, isBundledModelReady, currentModelUsesVisionPath) {
+        if (isBundledModelReady) {
+            mnnRuntime.openSession(
+                MnnSessionConfig(
+                    modelId = selectedModelId,
+                    modelDirectory = currentModelDirectory.absolutePath,
+                    backend = InferenceBackend.CPU,
+                    threadCount = 4,
+                    enableLowMemoryMode = true,
+                    enableMultimodalPath = currentModelUsesVisionPath,
+                    cpuSmeCoreCount = smeCoreCount,
+                    cpuSme2NeonDivisionRatio = smeDivisionRatio,
+                ),
+            )
+        } else {
+            cn.chenxuhang.creativeai.core.model.SessionOpenResult(
+                success = false,
+                runtimeVersion = mnnRuntime.runtimeVersion(),
+                backendName = "bootstrap-pending",
+                errorMessage = bundledModelResults[selectedModelId]?.message ?: "Bundled model is still preparing.",
+            )
+        }
+    }
+    val generationConfig = remember(currentModelDirectory, selectedModelId, currentModelUsesVisionPath, smeCoreCount, smeDivisionRatio) {
         MnnSessionConfig(
-            modelId = "qwen-local-1_5b-text",
-            modelDirectory = bootstrapModelDirectory.absolutePath,
+            modelId = selectedModelId,
+            modelDirectory = currentModelDirectory.absolutePath,
             backend = InferenceBackend.CPU,
             threadCount = 4,
             enableLowMemoryMode = true,
-            enableMultimodalPath = false,
+            enableMultimodalPath = currentModelUsesVisionPath,
+            cpuSmeCoreCount = smeCoreCount,
+            cpuSme2NeonDivisionRatio = smeDivisionRatio,
         )
     }
 
@@ -226,19 +280,25 @@ fun CreativeAiApp() {
             ),
         )
     }
-    var draftTitle by remember { mutableStateOf("Creative AI Android 头脑风暴纪要") }
-    var draftImageBrief by remember { mutableStateOf(defaultDraftImageBrief()) }
-    var draftOcrText by remember { mutableStateOf(defaultDraftOcrText()) }
-    var draftTranscript by remember { mutableStateOf(defaultDraftTranscript()) }
-    var draftNotes by remember { mutableStateOf(defaultDraftNotes()) }
-    var selectedImageAsset by remember { mutableStateOf<SelectedLocalAsset?>(null) }
+    var taskDataEpoch by remember { mutableStateOf(0) }
+    var draftTitle by remember { mutableStateOf("") }
+    var draftImageBrief by remember { mutableStateOf("") }
+    var draftOcrText by remember { mutableStateOf("") }
+    var draftTranscript by remember { mutableStateOf("") }
+    var draftNotes by remember { mutableStateOf("") }
+    val maxImageCount = remember { 8 }
+    var selectedImageAssets by remember { mutableStateOf<List<SelectedLocalAsset>>(emptyList()) }
     var selectedAudioAsset by remember { mutableStateOf<SelectedLocalAsset?>(null) }
+    var pendingCameraImageUri by remember { mutableStateOf<Uri?>(null) }
     var isRunningImageSummary by remember { mutableStateOf(false) }
     var isRunningImageOcr by remember { mutableStateOf(false) }
+    var isPreparingAudioTranscription by remember { mutableStateOf(false) }
     var isRunningAudioTranscription by remember { mutableStateOf(false) }
-    var audioTranscriptionModeLabel by remember { mutableStateOf("本地优先") }
+    var audioTranscriptionModeLabel by remember { mutableStateOf("端侧离线 ASR") }
     var playingAudioAssetUri by remember { mutableStateOf<String?>(null) }
     var retranscribingAudioAssetUri by remember { mutableStateOf<String?>(null) }
+    var croppingImageSourceUri by remember { mutableStateOf<String?>(null) }
+    var hiddenResultAssetUris by remember { mutableStateOf<Set<String>>(emptySet()) }
     var hasAudioPermission by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED,
@@ -248,10 +308,8 @@ fun CreativeAiApp() {
     var draftStatusMessage by remember { mutableStateOf<String?>(null) }
     var currentScreen by remember { mutableStateOf(AppScreen.HOME) }
     val scope = rememberCoroutineScope()
-    val audioRecorder = remember(storage.recordingsDir) {
-        AudioNoteRecorder(
-            outputDirectory = storage.recordingsDir,
-        )
+    val hasBundledSpeechRecognition = remember(context) {
+        SpeechRecognitionAvailability.isAnyRecognitionAvailable(context)
     }
     val audioPreviewPlayer = remember(context) {
         AudioPreviewPlayer(
@@ -263,30 +321,44 @@ fun CreativeAiApp() {
     val speechTranscriber = remember(context) {
         DeviceSpeechTranscriber(
             context = context,
+            recordingsDirectory = storage.recordingsDir,
             onTranscript = { update ->
                 draftTranscript = update.text
             },
             onStateChanged = { state ->
-                if (!state.isRunning && audioRecorder.isRecording) {
-                    selectedAudioAsset = audioRecorder.finishRecording() ?: selectedAudioAsset
-                }
+                isPreparingAudioTranscription = false
                 isRunningAudioTranscription = state.isRunning
                 audioTranscriptionModeLabel = state.modeLabel
             },
             onStatusMessage = { message ->
                 draftStatusMessage = message
             },
+            onAudioCaptured = { asset ->
+                if (asset != null) {
+                    selectedAudioAsset = asset
+                }
+            },
         )
     }
     val imagePickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument(),
-    ) { uri ->
-        selectedImageAsset = uri?.let {
-            context.persistReadPermission(it)
-            context.resolveSelectedLocalAsset(it)
-        }
-        if (uri != null) {
-            draftStatusMessage = "图片文件已选择，可继续补充图片描述或 OCR 文本。"
+        contract = ActivityResultContracts.OpenMultipleDocuments(),
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            val resolved = uris.map {
+                context.persistReadPermission(it)
+                context.resolveSelectedLocalAsset(it)
+            }
+            selectedImageAssets = appendSelectedImages(
+                existing = selectedImageAssets,
+                incoming = resolved,
+                maxCount = maxImageCount,
+            )
+            draftStatusMessage = buildString {
+                append("已选择 ${selectedImageAssets.size} 张图片。")
+                if (selectedImageAssets.size >= maxImageCount) {
+                    append(" 当前已达到上限 $maxImageCount 张。")
+                }
+            }
         }
     }
     val audioPickerLauncher = rememberLauncherForActivityResult(
@@ -300,32 +372,166 @@ fun CreativeAiApp() {
             draftStatusMessage = "录音文件已选择，可继续补充转写文本。"
         }
     }
+    val takePictureLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture(),
+    ) { success ->
+        val targetUri = pendingCameraImageUri
+        if (success && targetUri != null) {
+            selectedImageAssets = appendSelectedImages(
+                existing = selectedImageAssets,
+                incoming = listOf(context.resolveSelectedLocalAsset(targetUri)),
+                maxCount = maxImageCount,
+            )
+            draftStatusMessage = buildString {
+                append("现场拍摄图片已加入素材。当前共 ${selectedImageAssets.size} 张。")
+                if (selectedImageAssets.size >= maxImageCount) {
+                    append(" 已达到上限 $maxImageCount 张。")
+                }
+            }
+        } else {
+            draftStatusMessage = "已取消拍摄图片。"
+        }
+        pendingCameraImageUri = null
+    }
+    val cropImageLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        val sourceUri = croppingImageSourceUri
+        croppingImageSourceUri = null
+        when (result.resultCode) {
+            Activity.RESULT_OK -> {
+                val outputUri = result.data?.let(UCrop::getOutput)
+                if (outputUri != null && sourceUri != null) {
+                    selectedImageAssets = replaceSelectedImageAsset(
+                        existing = selectedImageAssets,
+                        sourceUri = sourceUri,
+                        replacement = context.resolveSelectedLocalAsset(outputUri),
+                    )
+                    draftStatusMessage = "图片裁剪已完成，新的区域已经替换原图片。"
+                } else {
+                    draftStatusMessage = "图片裁剪完成，但没有拿到新的图片结果。"
+                }
+            }
+            Activity.RESULT_CANCELED -> {
+                draftStatusMessage = "已取消图片裁剪。"
+            }
+            else -> {
+                val error = result.data?.let(UCrop::getError)
+                draftStatusMessage = error?.message ?: "图片裁剪失败。"
+            }
+        }
+    }
     val audioPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
     ) { granted ->
         hasAudioPermission = granted
         if (granted) {
-            runCatching {
-                audioRecorder.startRecording()
-                speechTranscriber.startListening()
-            }.onFailure { error ->
-                audioRecorder.cancelRecording()
-                draftStatusMessage = error.message ?: "无法启动录音与转写。"
+            isPreparingAudioTranscription = true
+            draftStatusMessage = "正在唤起麦克风和端侧识别，请稍候..."
+            scope.launch(Dispatchers.Default) {
+                runCatching {
+                    speechTranscriber.startListening()
+                }.onFailure { error ->
+                    withContext(Dispatchers.Main) {
+                        isPreparingAudioTranscription = false
+                        draftStatusMessage = error.message ?: "无法启动麦克风转写。"
+                    }
+                }
             }
         } else {
             draftStatusMessage = "未授予录音权限，无法启动麦克风转写。"
         }
     }
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            val captureUri = pendingCameraImageUri
+            if (captureUri != null) {
+                takePictureLauncher.launch(captureUri)
+            }
+        } else {
+            pendingCameraImageUri = null
+            draftStatusMessage = "未授予相机权限，无法拍摄图片。"
+        }
+    }
+    val clearCaptureDraft = remember {
+        {
+            draftTitle = ""
+            draftImageBrief = ""
+            draftOcrText = ""
+            draftTranscript = ""
+            draftNotes = ""
+            selectedImageAssets = emptyList()
+            selectedAudioAsset = null
+            pendingCameraImageUri = null
+            croppingImageSourceUri = null
+            hiddenResultAssetUris = emptySet()
+        }
+    }
 
-    DisposableEffect(speechTranscriber, audioRecorder, audioPreviewPlayer) {
+    DisposableEffect(speechTranscriber, audioPreviewPlayer) {
         onDispose {
             speechTranscriber.destroy()
-            audioRecorder.cancelRecording()
             audioPreviewPlayer.stop()
         }
     }
 
-    LaunchedEffect(sessionOpen.success, generationConfig.modelDirectory) {
+    LaunchedEffect(bundledModelSpecs) {
+        bundledModelResults = bundledModelSpecs.associate { spec ->
+            spec.modelId to BundledModelBootstrapResult(
+                success = false,
+                copiedFiles = emptyList(),
+                targetDirectory = spec.targetDirectory.absolutePath,
+                message = if (spec.bundledInApk) {
+                    "首次启动正在准备 ${spec.modelId}，请稍候..."
+                } else {
+                    "${spec.modelId} 未随安装包内置，需后续单独下载或导入。"
+                },
+            )
+        }
+        val results = mutableMapOf<String, BundledModelBootstrapResult>()
+        bundledModelSpecs.forEach { spec ->
+            val result = if (spec.bundledInApk) {
+                context.ensureBundledModelInstalled(
+                    assetDirectory = spec.assetDirectory,
+                    targetDirectory = spec.targetDirectory,
+                    requiredFiles = spec.requiredFiles,
+                    bundleVersion = spec.bundleVersion,
+                )
+            } else {
+                BundledModelBootstrapResult(
+                    success = false,
+                    copiedFiles = emptyList(),
+                    targetDirectory = spec.targetDirectory.absolutePath,
+                    message = "${spec.modelId} 未随安装包内置，需后续单独下载或导入。",
+                )
+            }
+            results[spec.modelId] = result
+            bundledModelResults = results.toMap()
+            if (result.success) {
+                modelManager.markInstalled(
+                    modelId = spec.modelId,
+                    localDirectory = spec.targetDirectory.absolutePath,
+                )
+            }
+        }
+        modelBootstrapEpoch += 1
+    }
+
+    LaunchedEffect(bundledModelResults, selectedModelId) {
+        val selectedReady = bundledModelResults[selectedModelId]?.success == true
+        if (selectedReady) return@LaunchedEffect
+        val fallbackModelId = listOf(
+            "qwen-vl-2b-instruct-mnn",
+        ).firstOrNull { bundledModelResults[it]?.success == true } ?: return@LaunchedEffect
+        if (fallbackModelId != selectedModelId) {
+            selectedModelId = fallbackModelId
+            appPrefs.edit().putString("selected_model_id", fallbackModelId).apply()
+        }
+    }
+
+    LaunchedEffect(sessionOpen.success, sessionOpen.errorMessage, generationConfig.modelDirectory, selectedModelId, modelBootstrapEpoch) {
         val persistedTasks = taskLocalStore.getAll()
         val persistedMemos = memoLocalStore.getAll()
         val hasPersistedResults = persistedTasks.isNotEmpty() || persistedMemos.isNotEmpty()
@@ -341,7 +547,7 @@ fun CreativeAiApp() {
                 memo = persistedMemos.lastOrNull(),
                 rawOutput = persistedMemos.lastOrNull()?.rawJson,
             )
-        } else if (!sessionOpen.success) {
+        } else if (isBundledModelReady && !sessionOpen.success) {
             StructuredMemoTaskExecutionResult(
                 task = MemoTask(
                     id = "blocked",
@@ -353,37 +559,21 @@ fun CreativeAiApp() {
                 errorMessage = sessionOpen.errorMessage ?: "session open failed",
             )
         } else {
-            withContext(Dispatchers.IO) {
-                taskExecutor.execute(
-                    StructuredMemoTaskRequest(
-                        title = "Creative AI Android 头脑风暴纪要",
-                        type = "brainstorm_memo",
-                        processingMode = ProcessingMode.LOCAL_ONLY,
-                        sessionConfig = generationConfig,
-                        sourceText = """
-                            项目名称：Creative AI Android
-                            会议类型：产品头脑风暴
-                            参会角色：产品、设计、Android、算法
-                            原始记录：
-                            1. 产品方向聚焦“图片、录音、文字一键生成结构化纪要”，优先解决创意讨论和灵感整理场景。
-                            2. 首版坚持本地优先，核心交互必须支持端侧运行，云端只做补充和兜底。
-                            3. 模型路线先从 Qwen3.5-0.8B MNN 包跑通文本纪要，再逐步扩展到更大模型和多模态模型。
-                            4. 工程上已经接入 MNN JNI，需要下一步验证真实 prompt 到 JSON 输出是否稳定。
-                            5. 设计上希望结果页不是单纯摘要，而是分成主题、结论、行动项、风险和引用。
-                            6. Android 同学担心端侧内存压力，建议默认低内存模式并优先 CPU 路线，后面再评估 NNAPI。
-                            7. 算法同学建议把 OCR、ASR、图片理解拆成前处理层，先统一汇总成文本上下文，再进入本地 Qwen 文本模型。
-                            8. 本周目标是先打通一条可演示的本地链路，用来参加答辩演示。
-                        """.trimIndent(),
-                    ),
-                )
-            }
+            StructuredMemoTaskExecutionResult(
+                task = MemoTask(
+                    id = "idle",
+                    title = "未执行",
+                    type = "structured_memo",
+                    status = "IDLE",
+                ),
+            )
         }
     }
 
-    val savedTasks = remember(taskLocalStore, lastExecution) {
+    val savedTasks = remember(taskLocalStore, lastExecution, taskDataEpoch) {
         taskLocalStore.getAll().asReversed()
     }
-    val savedMemos = remember(memoLocalStore, lastExecution) {
+    val savedMemos = remember(memoLocalStore, lastExecution, taskDataEpoch) {
         memoLocalStore.getAll().asReversed()
     }
     val latestMemo = savedMemos.firstOrNull()
@@ -393,113 +583,160 @@ fun CreativeAiApp() {
         modelManager,
         plan,
         mnnRuntime,
-        fallbackRuntime,
         capabilityReport,
-        prebuiltLayout,
+        bundledMnnBuildProfile,
+        cpuAccelerationProbe,
         installPlan,
         installStatus,
         modelProbe,
         sessionOpen,
-        savedTasks,
-        latestMemo,
-        lastExecution,
+        selectedModelId,
+        bundledModelResults,
+        currentModelDirectory,
     ) {
         HomeUiState(
-            headline = "Creative AI Android",
-            subheadline = "本地 Qwen 优先，云端仅辅助。当前工程已经具备真实 MNN-LLM 会话打开能力，并开始尝试端侧结构化纪要生成。",
-            readinessItems = listOf(
-                ReadinessItem("本地模型目录", storage.modelsDir.absolutePath),
-                ReadinessItem("当前演示模型目录", bootstrapModelDirectory.absolutePath),
-                ReadinessItem("纪要缓存目录", storage.memosDir.absolutePath),
-                ReadinessItem("录音素材目录", storage.recordingsDir.absolutePath),
-                ReadinessItem("任务索引文件", storage.taskIndexFile.absolutePath),
-                ReadinessItem("纪要索引文件", storage.memoIndexFile.absolutePath),
-                ReadinessItem("任务数据源", taskLocalStore.describe()),
-                ReadinessItem("纪要数据源", memoLocalStore.describe()),
-                ReadinessItem("MNN 运行时", mnnRuntime.describe()),
-                ReadinessItem("MNN 兜底运行时", fallbackRuntime.describe()),
-                ReadinessItem("MNN 版本", mnnRuntime.runtimeVersion()),
-                ReadinessItem("真实 MNN 已链接", mnnRuntime.supportsRealMnn().toString()),
-                ReadinessItem("MNN 期望 ABI", MnnPrebuiltLocator.expectedAbis().joinToString()),
-                ReadinessItem(
-                    "MNN 预编译布局",
-                    "include=${prebuiltLayout.includeDirectoryExists}, available=${prebuiltLayout.availableAbis.joinToString()}, missing=${prebuiltLayout.missingAbis.joinToString()}",
+            headline = "设置",
+            subheadline = "看看 MemoMind 的端侧链路是不是都站稳了，模型、推理、加速和存储状态一眼就能看明白。",
+            components = listOf(
+                SystemComponentItem(
+                    title = "Qwen 端侧模型包",
+                    detail = if (modelProbe.exists && modelProbe.hasTokenizer && modelProbe.hasWeights && modelProbe.hasConfig) {
+                        "模型目录已准备完成，tokenizer、权重和配置文件都可用。"
+                    } else {
+                        "模型目录还没补齐，缺失项：${modelProbe.missingFiles.joinToString().ifBlank { "待检查" }}。"
+                    },
+                    statusLabel = if (modelProbe.exists && modelProbe.hasTokenizer && modelProbe.hasWeights && modelProbe.hasConfig) "已就绪" else "待补齐",
+                    isReady = modelProbe.exists && modelProbe.hasTokenizer && modelProbe.hasWeights && modelProbe.hasConfig,
+                    icon = Icons.Outlined.AllInbox,
                 ),
-                ReadinessItem(
-                    "本地资源覆盖",
-                    "1.5B llm=${BuildConfig.QWEN_1_5B_TEXT_LLM_MNN_URL.ifBlank { "unset" }}",
+                SystemComponentItem(
+                    title = "MNN 运行时",
+                    detail = "真实 MNN=${mnnRuntime.supportsRealMnn()}，桥接版本 ${mnnRuntime.runtimeVersion().substringBefore(',')}，端侧 CPU 推理链已经接通。",
+                    statusLabel = if (mnnRuntime.supportsRealMnn()) "已链接" else "stub",
+                    isReady = mnnRuntime.supportsRealMnn(),
+                    icon = Icons.Outlined.Memory,
                 ),
-                ReadinessItem("设备档位", capabilityReport.deviceTier.name),
-                ReadinessItem("执行路径", "${plan.path}: ${plan.reason}"),
-                ReadinessItem(
-                    "模型安装计划",
-                    "assets=${installPlan?.requiredAssets?.size ?: 0}, bytes=${installPlan?.requiredFreeBytes ?: 0}",
+                SystemComponentItem(
+                    title = "SME2 构建",
+                    detail = "ABI ${bundledMnnBuildProfile?.androidAbi ?: "unknown"}，SME2=${bundledMnnBuildProfile?.mnnSme2Enabled ?: false}，KleidiAI=${bundledMnnBuildProfile?.mnnKleidiAiEnabled ?: false}。",
+                    statusLabel = if (bundledMnnBuildProfile?.mnnSme2Enabled == true) "已编入" else "未确认",
+                    isReady = bundledMnnBuildProfile?.mnnSme2Enabled == true,
+                    icon = Icons.Outlined.Tune,
                 ),
-                ReadinessItem("模型安装状态", installStatus.name),
-                ReadinessItem(
-                    "模型目录探测",
-                    "exists=${modelProbe.exists}, tokenizer=${modelProbe.hasTokenizer}, weights=${modelProbe.hasWeights}, config=${modelProbe.hasConfig}, missing=${modelProbe.missingFiles.joinToString()}",
+                SystemComponentItem(
+                    title = "SME2 硬件探测",
+                    detail = "arm64=${cpuAccelerationProbe.isArm64}，SME=${cpuAccelerationProbe.hasSme}，SME2=${cpuAccelerationProbe.hasSme2}，来源 ${cpuAccelerationProbe.detectionSource}。",
+                    statusLabel = if (cpuAccelerationProbe.hasSme2) "已命中" else "未命中",
+                    isReady = cpuAccelerationProbe.hasSme2,
+                    icon = Icons.Outlined.DeveloperBoard,
                 ),
-                ReadinessItem(
-                    "会话打开结果",
-                    "success=${sessionOpen.success}, backend=${sessionOpen.backendName}, error=${sessionOpen.errorMessage ?: "none"}",
+                SystemComponentItem(
+                    title = "本地会话打开",
+                    detail = if (sessionOpen.success) {
+                        "当前模型 ${selectedModelId} 会话已成功拉起，backend=${sessionOpen.backendName}。"
+                    } else {
+                        "会话还没成功拉起，backend=${sessionOpen.backendName}，错误：${sessionOpen.errorMessage ?: "待检查"}。"
+                    },
+                    statusLabel = if (sessionOpen.success) "成功" else "失败",
+                    isReady = sessionOpen.success,
+                    icon = Icons.Outlined.CheckCircle,
+                ),
+                SystemComponentItem(
+                    title = "本地存储",
+                    detail = "模型、纪要和录音目录都可读写，任务索引与纪要索引已经接通。",
+                    statusLabel = "可读写",
+                    isReady = storage.modelsDir.exists() && storage.memosDir.exists() && storage.recordingsDir.exists(),
+                    icon = Icons.Outlined.SdStorage,
                 ),
             ),
             installedModels = modelManager.installedModels().map {
+                val actualDirectory = modelDirectories[it.manifest.modelId]
+                val actualStatus = actualDirectory?.let { directory ->
+                    modelManager.validateInstallation(it.manifest.modelId, directory.absolutePath)
+                } ?: it.installStatus
+                val tags = buildList {
+                    if (it.manifest.modelId == "qwen-vl-2b-instruct-mnn") {
+                        add("图片理解更强")
+                        add("多图语境更稳")
+                        add("适合图文混合纪要")
+                        add("已随包内置")
+                    }
+                    add("RAM ${it.manifest.recommendedMinRamGb}GB+")
+                    add("最大输入约 ${it.manifest.recommendedMaxInput} tokens")
+                }
                 ModelInstallItem(
+                    modelId = it.manifest.modelId,
                     title = it.manifest.displayName,
-                    status = it.installStatus.name,
-                    detail = "${it.manifest.modelId} | ${it.manifest.estimatedStorageBytes / 1_000_000}MB | ${it.localDirectory ?: "pending"}",
+                    status = actualStatus.name,
+                    detail = "${it.manifest.modelId} | ${it.manifest.estimatedStorageBytes / 1_000_000}MB | ${actualDirectory?.absolutePath ?: "pending"}",
+                    tags = tags,
+                    isReady = actualStatus.name == "INSTALLED",
+                    isSelected = selectedModelId == it.manifest.modelId,
                 )
             },
-            nextMilestones = listOf(
-                "把单轮 JSON 生成升级成可复用会话与流式输出",
-                "接入 OCR / ASR 前处理，把图片和音频统一转成文本上下文",
-                "把结构化纪要保存到本地任务流并接结果页",
+            projectSourceUrl = "https://github.com/chenxuh-autobot/MemoMind",
+            feedbackIdeas = listOf(
+                "推荐优先做一份飞书表单，现场扫码就能提交，适合比赛答辩时快速收反馈。",
+                "建议题目包含：使用的是哪个模型、图片/OCR/语音哪一步最满意、纪要质量是否达标。",
+                "最后保留一个开放题，让用户直接写下最想优化的体验点和新功能建议。",
             ),
-            recentTasks = savedTasks.take(3).map { task ->
-                TaskRecordItem(
-                    title = task.title,
-                    status = task.status,
-                    detail = "${task.type} | ${task.processingMode.name} | ${task.summary.ifBlank { "暂无摘要" }}",
-                )
-            },
-            latestMemoItems = latestMemo?.let { memo ->
-                listOf(
-                    ReadinessItem("一句话总结", memo.oneLineSummary),
-                    ReadinessItem("背景", memo.background),
-                    ReadinessItem("主题数", memo.topics.size.toString()),
-                    ReadinessItem("结论数", memo.decisions.size.toString()),
-                    ReadinessItem("行动项数", memo.actionItems.size.toString()),
-                    ReadinessItem("标签", memo.tags.joinToString()),
-                )
-            }.orEmpty(),
-            latestRawOutput = latestMemo?.rawJson ?: lastExecution.rawOutput?.take(1600),
         )
     }
 
-    val historyUiState = remember(savedTasks) {
+    val memoByTaskId = remember(savedMemos) {
+        savedMemos.associateBy { it.taskId }
+    }
+    val archiveFolders = remember(savedTasks, taskDataEpoch) {
+        loadArchiveFolders(appPrefs, savedTasks)
+    }
+    val historyUiState = remember(savedTasks, memoByTaskId, archiveFolders) {
+        val activeTasks = savedTasks.filterNot { it.isArchived }
+        val archivedTasksByFolder = savedTasks
+            .filter { it.isArchived && !it.archiveFolder.isNullOrBlank() }
+            .groupBy { it.archiveFolder.orEmpty() }
+        val archiveGroups = archiveFolders.map { folderName ->
+            val tasks = archivedTasksByFolder[folderName].orEmpty()
+            HistoryArchiveGroup(
+                folderName = folderName,
+                tasks = tasks.map { task ->
+                    val relatedMemo = memoByTaskId[task.id]
+                    HistoryTaskItem(
+                        taskId = task.id,
+                        title = task.title,
+                        status = task.status,
+                        summary = task.summary.ifBlank { "暂无摘要" },
+                        detail = "",
+                        canRecall = task.sourceSections.isNotEmpty() || task.sourceText.isNotBlank() || !relatedMemo?.sourceOutline.isNullOrEmpty(),
+                        isArchived = true,
+                    )
+                },
+            )
+        }
         HistoryUiState(
             headline = "任务历史",
-            subheadline = "查看最近的端侧纪要任务执行记录。",
-            tasks = savedTasks.map { task ->
+            subheadline = "",
+            activeTasks = activeTasks.map { task ->
+                val relatedMemo = memoByTaskId[task.id]
                 HistoryTaskItem(
+                    taskId = task.id,
                     title = task.title,
                     status = task.status,
                     summary = task.summary.ifBlank { "暂无摘要" },
-                    detail = buildList {
-                        add(task.type)
-                        add(task.processingMode.name)
-                        if (task.sourceChannels.isNotEmpty()) {
-                            add(task.sourceChannels.joinToString(" + "))
-                        }
-                        if (task.assetRefs.isNotEmpty()) {
-                            add("assets=${task.assetRefs.size}")
-                        }
-                    }.joinToString(" | "),
+                    detail = "",
+                    canRecall = task.sourceSections.isNotEmpty() || task.sourceText.isNotBlank() || !relatedMemo?.sourceOutline.isNullOrEmpty(),
+                    isArchived = false,
                 )
             },
+            archiveGroups = archiveGroups,
         )
+    }
+
+    val captureStatusMessage = remember(draftStatusMessage, bundledModelResults, selectedModelId, isBundledModelReady) {
+        if (!isBundledModelReady) {
+            bundledModelResults[selectedModelId]?.message ?: "首次启动正在准备本地模型，请稍候..."
+        } else {
+            draftStatusMessage
+        }
     }
 
     val captureUiState = remember(
@@ -508,12 +745,14 @@ fun CreativeAiApp() {
         draftOcrText,
         draftTranscript,
         draftNotes,
-        selectedImageAsset,
+        selectedImageAssets,
         selectedAudioAsset,
         isRunningImageSummary,
         isRunningImageOcr,
+        hasBundledSpeechRecognition,
+        isBundledModelReady,
         isSubmittingDraft,
-        draftStatusMessage,
+        captureStatusMessage,
     ) {
         val sourceSections = composeDraftSourceSections(
             imageBrief = draftImageBrief,
@@ -522,47 +761,57 @@ fun CreativeAiApp() {
             supplementalText = draftNotes,
         )
         CaptureUiState(
-            headline = "提交纪要任务",
-            subheadline = "把图片说明、OCR、录音转写和补充文字统一汇总，再交给本地 Qwen 生成结构化纪要。",
+            headline = "纪要任务",
+            subheadline = "把图片、语音和文字交给 MemoMind，它会帮你整理成清晰纪要。",
             titleInput = draftTitle,
+            showTitleRequiredHint = draftTitle.isBlank() && sourceSections.isNotEmpty(),
             imageBriefInput = draftImageBrief,
             ocrTextInput = draftOcrText,
             transcriptInput = draftTranscript,
             notesInput = draftNotes,
-            selectedImageAssetLabel = selectedImageAsset?.displayName,
+            maxImageCount = maxImageCount,
+            selectedImageAssets = selectedImageAssets.map {
+                CaptureAssetItem(
+                    displayName = it.displayName,
+                    uri = it.uri,
+                )
+            },
             selectedAudioAssetLabel = selectedAudioAsset?.displayName,
             composedPreview = composeUnifiedSourceText(sourceSections),
             activeSourceLabels = sourceSections.map { it.label },
-            canRunImageOcr = selectedImageAsset != null,
+            canRunImageOcr = selectedImageAssets.isNotEmpty(),
             isRunningImageOcr = isRunningImageOcr,
-            canRunImageSummary = selectedImageAsset != null,
+            canRunImageSummary = selectedImageAssets.isNotEmpty(),
             isRunningImageSummary = isRunningImageSummary,
-            canStartAudioTranscription = hasAudioPermission || !isRunningAudioTranscription,
-            canStopAudioTranscription = isRunningAudioTranscription,
+            canToggleAudioTranscription = hasBundledSpeechRecognition && !isSubmittingDraft,
+            isPreparingAudioTranscription = isPreparingAudioTranscription,
             isRunningAudioTranscription = isRunningAudioTranscription,
-            audioTranscriptionModeLabel = audioTranscriptionModeLabel,
+            audioTranscriptionModeLabel = if (hasBundledSpeechRecognition) {
+                audioTranscriptionModeLabel
+            } else {
+                "当前 APK 未打包端侧 ASR 模型"
+            },
+            audioToggleLabel = "使用麦克风转写",
             isSubmitting = isSubmittingDraft,
-            submitEnabled = draftTitle.isNotBlank() && sourceSections.isNotEmpty(),
-            statusMessage = draftStatusMessage,
+            submitEnabled = isBundledModelReady && draftTitle.isNotBlank() && sourceSections.isNotEmpty(),
+            statusMessage = captureStatusMessage,
         )
     }
 
-    val resultUiState = remember(latestMemo, lastExecution, playingAudioAssetUri, retranscribingAudioAssetUri) {
+    val resultUiState = remember(latestMemo, lastExecution, playingAudioAssetUri, retranscribingAudioAssetUri, hiddenResultAssetUris) {
         ResultUiState(
             headline = "纪要结果",
-            subheadline = "查看最近一次结构化纪要输出。",
+            subheadline = "看看 MemoMind 刚刚帮你整理出了什么重点。",
             summary = latestMemo?.oneLineSummary,
             sections = latestMemo?.let { memo ->
                 buildList {
                     add(ResultSectionItem("背景", memo.background))
-                    if (memo.topics.isNotEmpty()) {
-                        add(ResultSectionItem("主题", memo.topics.joinToString("\n") { "${it.name}: ${it.summary}" }))
-                    }
                     if (memo.facts.isNotEmpty()) {
-                        add(ResultSectionItem("事实", memo.facts.joinToString("\n")))
-                    }
-                    if (memo.decisions.isNotEmpty()) {
-                        add(ResultSectionItem("结论", memo.decisions.joinToString("\n")))
+                        add(ResultSectionItem("关键要点", formatNumberedLines(memo.facts)))
+                    } else if (memo.topics.isNotEmpty()) {
+                        add(ResultSectionItem("关键要点", formatNumberedLines(memo.topics.map { "${it.name}: ${it.summary}" })))
+                    } else if (memo.decisions.isNotEmpty()) {
+                        add(ResultSectionItem("关键要点", formatNumberedLines(memo.decisions)))
                     }
                     if (memo.actionItems.isNotEmpty()) {
                         add(
@@ -578,22 +827,20 @@ fun CreativeAiApp() {
                             ),
                         )
                     }
-                    if (memo.sourceOutline.isNotEmpty()) {
-                        add(ResultSectionItem("输入来源", memo.sourceOutline.joinToString("\n\n")))
-                    }
                     if (memo.risks.isNotEmpty()) {
-                        add(ResultSectionItem("风险", memo.risks.joinToString("\n")))
+                        add(ResultSectionItem("风险提示", memo.risks.joinToString("\n")))
                     }
-                    if (memo.quotes.isNotEmpty()) {
-                        add(ResultSectionItem("引用", memo.quotes.joinToString("\n")))
+                    if (memo.sourceOutline.isNotEmpty()) {
+                        add(ResultSectionItem("输入来源", memo.sourceOutline.joinToString(" / ")))
                     }
                     if (memo.tags.isNotEmpty()) {
-                        add(ResultSectionItem("标签", memo.tags.joinToString()))
+                        add(ResultSectionItem("标签", formatTagLines(memo.tags)))
                     }
                 }
             }.orEmpty(),
             assetItems = latestMemo?.assetRefs
                 ?.mapNotNull(::parseAssetRef)
+                ?.filterNot { it.uri in hiddenResultAssetUris }
                 ?.map { asset ->
                     ResultAssetItem(
                         kindLabel = asset.kindLabel,
@@ -602,39 +849,78 @@ fun CreativeAiApp() {
                         uri = asset.uri,
                         isPlayableAudio = asset.kindLabel == "AUDIO",
                         isPlaying = playingAudioAssetUri == asset.uri,
-                        canRetranscribeAudio = asset.kindLabel == "AUDIO" && Build.VERSION.SDK_INT >= 33,
+                        canRetranscribeAudio = asset.kindLabel == "AUDIO",
                         isRetranscribing = retranscribingAudioAssetUri == asset.uri,
                     )
                 }
                 .orEmpty(),
-            rawJson = latestMemo?.rawJson ?: lastExecution.rawOutput,
+            agentActions = latestMemo?.let {
+                listOf(
+                    AgentActionItem(
+                        id = "codex",
+                        label = "复制给 Codex",
+                        detail = "继续整理成图表、表格、邮件和交付物。",
+                        icon = Icons.Outlined.ContentCopy,
+                    ),
+                    AgentActionItem(
+                        id = "claude_code",
+                        label = "复制给 Claude Code",
+                        detail = "继续结构化分析，并生成更长文档或说明稿。",
+                        icon = Icons.Outlined.ContentCopy,
+                    ),
+                    AgentActionItem(
+                        id = "trae",
+                        label = "复制给 Trae",
+                        detail = "继续转换成项目任务、图示或执行方案。",
+                        icon = Icons.Outlined.ContentCopy,
+                    ),
+                    AgentActionItem(
+                        id = "work_buddy",
+                        label = "复制给 Work Buddy",
+                        detail = "继续生成待办、汇报和执行清单。",
+                        icon = Icons.Outlined.ContentCopy,
+                    ),
+                    AgentActionItem(
+                        id = "share",
+                        label = "系统分享",
+                        detail = "发到电脑端常用协作工具或聊天软件。",
+                        icon = Icons.Outlined.Share,
+                    ),
+                    AgentActionItem(
+                        id = "email",
+                        label = "发到邮箱",
+                        detail = "直接生成一封纪要邮件草稿。",
+                        icon = Icons.Outlined.Email,
+                    ),
+                )
+            }.orEmpty(),
         )
+    }
+    val hasResultScreenContent = remember(resultUiState) {
+        !resultUiState.summary.isNullOrBlank() || resultUiState.sections.isNotEmpty()
     }
 
     Scaffold(
-        topBar = {
-            Surface(modifier = Modifier.fillMaxWidth()) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    AppScreen.entries.forEach { screen ->
-                        if (currentScreen == screen) {
-                            FilledTonalButton(
-                                onClick = { currentScreen = screen },
-                            ) {
-                                Text(screen.label)
+        bottomBar = {
+            NavigationBar {
+                AppScreen.entries.forEach { screen ->
+                    val enabled = screen != AppScreen.RESULT || hasResultScreenContent
+                    NavigationBarItem(
+                        selected = currentScreen == screen,
+                        onClick = {
+                            if (enabled) {
+                                currentScreen = screen
                             }
-                        } else {
-                            OutlinedButton(
-                                onClick = { currentScreen = screen },
-                            ) {
-                                Text(screen.label)
-                            }
-                        }
-                    }
+                        },
+                        enabled = enabled,
+                        icon = {
+                            Icon(
+                                imageVector = screen.icon(),
+                                contentDescription = screen.label,
+                            )
+                        },
+                        label = { Text(screen.label) },
+                    )
                 }
             }
         },
@@ -647,6 +933,16 @@ fun CreativeAiApp() {
             when (currentScreen) {
                 AppScreen.HOME -> HomeRoute(
                     uiState = homeUiState,
+                    onSelectModel = { modelId ->
+                        if (selectedModelId != modelId) {
+                            selectedModelId = modelId
+                            appPrefs.edit().putString("selected_model_id", modelId).apply()
+                            draftStatusMessage = "已切换到 ${modelManager.catalog().firstOrNull { it.modelId == modelId }?.displayName ?: modelId}。"
+                        }
+                    },
+                    onOpenProjectSource = {
+                        context.openAssetExternally(Uri.parse(homeUiState.projectSourceUrl))
+                    },
                     modifier = Modifier.fillMaxSize(),
                 )
                 AppScreen.CAPTURE -> CaptureRoute(
@@ -657,52 +953,90 @@ fun CreativeAiApp() {
                     onTranscriptChange = { draftTranscript = it },
                     onNotesChange = { draftNotes = it },
                     onPickImage = { imagePickerLauncher.launch(arrayOf("image/*")) },
-                    onClearImage = {
-                        selectedImageAsset = null
-                        draftStatusMessage = "已清除图片文件引用。"
-                    },
-                    onRunImageSummary = {
-                        val imageUri = selectedImageAsset?.uri?.let(Uri::parse) ?: return@CaptureRoute
-                        if (isRunningImageSummary) return@CaptureRoute
-                        isRunningImageSummary = true
-                        draftStatusMessage = "正在提取图片语义要点..."
-                        scope.launch {
-                            val result = runCatching {
-                                withContext(Dispatchers.IO) {
-                                    context.extractImageSemanticSummary(imageUri)
-                                }
-                            }
-                            isRunningImageSummary = false
-                            result.onSuccess { summary ->
-                                if (summary.summaryText.isNotBlank()) {
-                                    draftImageBrief = "图片中重点元素: ${summary.summaryText}"
-                                    draftStatusMessage = "图片要点提取完成，已回填到图片内容补充。"
-                                } else {
-                                    draftStatusMessage = "图片要点提取完成，但没有拿到稳定标签。"
-                                }
-                            }.onFailure { error ->
-                                draftStatusMessage = error.message ?: "图片要点提取失败"
-                            }
+                    onCaptureImage = {
+                        if (selectedImageAssets.size >= maxImageCount) {
+                            draftStatusMessage = "图片最多只能保留 $maxImageCount 张，请先清除部分图片。"
+                            return@CaptureRoute
+                        }
+                        val captureUri = context.createCapturedImageUri(storage)
+                        pendingCameraImageUri = captureUri
+                        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                            takePictureLauncher.launch(captureUri)
+                        } else {
+                            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
                         }
                     },
+                    onClearImage = {
+                        selectedImageAssets = emptyList()
+                        draftStatusMessage = "已清除图片文件引用。"
+                    },
+                    onOpenImageAsset = { assetUri ->
+                        val sourceUri = Uri.parse(assetUri)
+                        val destinationUri = context.createImageCropOutputUri(storage)
+                        val options = UCrop.Options().apply {
+                            setFreeStyleCropEnabled(true)
+                            setHideBottomControls(false)
+                            setToolbarTitle("裁剪图片")
+                            setCompressionQuality(92)
+                        }
+                        croppingImageSourceUri = assetUri
+                        cropImageLauncher.launch(
+                            UCrop.of(sourceUri, destinationUri)
+                                .withOptions(options)
+                                .getIntent(context),
+                        )
+                    },
+                    onRunImageSummary = {},
                     onRunImageOcr = {
-                        val imageUri = selectedImageAsset?.uri?.let(Uri::parse) ?: return@CaptureRoute
+                        val imageUris = selectedImageAssets.map { Uri.parse(it.uri) }
+                        if (imageUris.isEmpty()) return@CaptureRoute
                         if (isRunningImageOcr) return@CaptureRoute
                         isRunningImageOcr = true
-                        draftStatusMessage = "正在执行端侧图片 OCR..."
+                        draftStatusMessage = if (selectedModelId in VisionEnhancedModelIds && isBundledModelReady) {
+                            "正在执行图片识别，并结合视觉模型进行文字整理..."
+                        } else {
+                            "正在执行端侧图片 OCR..."
+                        }
                         scope.launch {
                             val result = runCatching {
                                 withContext(Dispatchers.IO) {
-                                    context.runChineseImageOcr(imageUri)
+                                    imageUris.mapIndexed { index, imageUri ->
+                                        val ocr = context.runChineseImageOcr(imageUri)
+                                        val visionText = if (selectedModelId in VisionEnhancedModelIds && isBundledModelReady) {
+                                            context.describeImageWithVisionModel(
+                                                runtime = mnnRuntime,
+                                                config = generationConfig,
+                                                imageUri = imageUri,
+                                            ).text
+                                        } else {
+                                            ""
+                                        }
+                                        val merged = chooseImageRecognitionText(
+                                            ocrText = ocr.text,
+                                            visionText = visionText,
+                                        )
+                                        OcrRecognitionResult(
+                                            text = merged
+                                                .takeIf { it.isNotBlank() }
+                                                ?.let { "[第${index + 1}张图片识别文本]\n$it" }
+                                                .orEmpty(),
+                                            blockCount = ocr.blockCount,
+                                        )
+                                    }
                                 }
                             }
                             isRunningImageOcr = false
-                            result.onSuccess { ocr ->
-                                draftOcrText = ocr.text
-                                draftStatusMessage = if (ocr.text.isBlank()) {
+                            result.onSuccess { ocrResults ->
+                                val mergedText = ocrResults
+                                    .map { it.text }
+                                    .filter { it.isNotBlank() }
+                                    .joinToString("\n\n")
+                                draftOcrText = mergedText
+                                val totalBlocks = ocrResults.sumOf { it.blockCount }
+                                draftStatusMessage = if (mergedText.isBlank()) {
                                     "OCR 已完成，但没有识别到可用文字。"
                                 } else {
-                                    "OCR 已完成，识别到 ${ocr.blockCount} 个文本块，结果已回填到 OCR 文本。"
+                                    "图片识别已完成，识别到 $totalBlocks 个文本块，结果已回填到图片识别文本。"
                                 }
                             }.onFailure { error ->
                                 draftStatusMessage = error.message ?: "OCR 执行失败"
@@ -711,43 +1045,51 @@ fun CreativeAiApp() {
                     },
                     onPickAudio = { audioPickerLauncher.launch(arrayOf("audio/*")) },
                     onClearAudio = {
+                        val removedAudioUri = selectedAudioAsset?.uri
                         selectedAudioAsset = null
-                        draftStatusMessage = "已清除录音文件引用。"
-                    },
-                    onStartAudioTranscription = {
-                        if (!SpeechRecognitionAvailability.isAnyRecognitionAvailable(context)) {
-                            draftStatusMessage = "当前设备没有可用的语音识别服务。"
-                            return@CaptureRoute
+                        draftTranscript = ""
+                        removedAudioUri?.let { uri ->
+                            hiddenResultAssetUris = hiddenResultAssetUris + uri
+                            if (playingAudioAssetUri == uri) {
+                                audioPreviewPlayer.stop()
+                            }
                         }
-                        if (hasAudioPermission) {
-                            runCatching {
-                                audioRecorder.startRecording()
-                                speechTranscriber.startListening()
-                            }.onSuccess {
-                                draftStatusMessage = "已开始录音并进行语音转写。"
-                            }.onFailure { error ->
-                                audioRecorder.cancelRecording()
-                                draftStatusMessage = error.message ?: "无法启动录音与转写。"
+                        draftStatusMessage = "已清除录音文件引用和转写文本。"
+                    },
+                    onToggleAudioTranscription = {
+                        if (isRunningAudioTranscription || isPreparingAudioTranscription) {
+                            isPreparingAudioTranscription = false
+                            isRunningAudioTranscription = false
+                            speechTranscriber.stopListening()
+                            draftStatusMessage = "正在停止录音并整理端侧转写结果..."
+                        } else if (hasAudioPermission) {
+                            isPreparingAudioTranscription = true
+                            draftStatusMessage = "正在唤起麦克风和端侧识别，请稍候..."
+                            scope.launch(Dispatchers.Default) {
+                                runCatching {
+                                    speechTranscriber.startListening()
+                                }.onFailure { error ->
+                                    withContext(Dispatchers.Main) {
+                                        isPreparingAudioTranscription = false
+                                        draftStatusMessage = error.message ?: "无法启动麦克风转写。"
+                                    }
+                                }
                             }
                         } else {
                             audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
                         }
                     },
-                    onStopAudioTranscription = {
-                        speechTranscriber.stopListening()
-                        draftStatusMessage = "正在停止录音并整理转写结果..."
-                    },
                     onSubmit = {
                         val sourceSections = composeDraftSourceSections(
-                            imageBrief = draftImageBrief,
+                            imageBrief = "",
                             ocrText = draftOcrText,
                             transcriptText = draftTranscript,
                             supplementalText = draftNotes,
                         )
-                        val assetRefs = listOfNotNull(
-                            selectedImageAsset?.toTaskAssetRef("IMAGE"),
-                            selectedAudioAsset?.toTaskAssetRef("AUDIO"),
-                        )
+                        val assetRefs = buildList {
+                            addAll(selectedImageAssets.map { it.toTaskAssetRef("IMAGE") })
+                            selectedAudioAsset?.let { add(it.toTaskAssetRef("AUDIO")) }
+                        }
                         if (isSubmittingDraft || draftTitle.isBlank() || sourceSections.isEmpty()) return@CaptureRoute
                         draftStatusMessage = "正在调用本地 Qwen 生成结构化纪要..."
                         isSubmittingDraft = true
@@ -769,6 +1111,8 @@ fun CreativeAiApp() {
                             isSubmittingDraft = false
                             if (result.memo != null) {
                                 draftStatusMessage = "纪要生成完成，已写入本地任务流。"
+                                hiddenResultAssetUris = emptySet()
+                                clearCaptureDraft()
                                 currentScreen = AppScreen.RESULT
                             } else {
                                 draftStatusMessage = result.errorMessage ?: "任务执行失败"
@@ -779,6 +1123,68 @@ fun CreativeAiApp() {
                 )
                 AppScreen.HISTORY -> HistoryRoute(
                     uiState = historyUiState,
+                    onRecallTask = { taskId ->
+                        val task = savedTasks.firstOrNull { it.id == taskId } ?: return@HistoryRoute
+                        val relatedMemo = memoByTaskId[task.id]
+                        val restoredSections = restoreDraftSourceSections(
+                            task = task,
+                            memo = relatedMemo,
+                        )
+                        draftTitle = task.title
+                        draftImageBrief = ""
+                        draftOcrText = restoredSections.firstContent(SourceInputChannel.OCR_TEXT)
+                        draftTranscript = restoredSections.firstContent(SourceInputChannel.AUDIO_TRANSCRIPT)
+                        draftNotes = restoredSections.firstContent(SourceInputChannel.SUPPLEMENTAL_TEXT)
+                        selectedImageAssets = task.assetRefs
+                            .parsedAssets(kindLabel = "IMAGE")
+                            .map { it.toSelectedLocalAsset() }
+                            .take(maxImageCount)
+                        selectedAudioAsset = task.assetRefs
+                            .firstParsedAsset(kindLabel = "AUDIO")
+                            ?.toSelectedLocalAsset()
+                        draftStatusMessage = "已回填历史输入，可继续编辑后重新生成。"
+                        currentScreen = AppScreen.CAPTURE
+                    },
+                    onDeleteTask = { taskId ->
+                        taskLocalStore.delete(taskId)
+                        memoLocalStore.delete(taskId)
+                        taskDataEpoch += 1
+                        draftStatusMessage = "已删除这条历史任务。"
+                    },
+                    onRenameArchiveFolder = { oldName, newName ->
+                        val trimmed = newName.trim()
+                        if (trimmed.isBlank() || trimmed == oldName) return@HistoryRoute
+                        savedTasks.filter { it.archiveFolder == oldName }.forEach { task ->
+                            taskLocalStore.save(task.copy(archiveFolder = trimmed, isArchived = true))
+                        }
+                        replaceArchiveFolder(appPrefs, oldName, trimmed)
+                        taskDataEpoch += 1
+                    },
+                    onArchiveTaskIntoFolder = { taskId, folderName ->
+                        val task = savedTasks.firstOrNull { it.id == taskId } ?: return@HistoryRoute
+                        taskLocalStore.save(
+                            task.copy(
+                                isArchived = true,
+                                archiveFolder = folderName,
+                            ),
+                        )
+                        taskDataEpoch += 1
+                        draftStatusMessage = "已把任务放进 $folderName。"
+                    },
+                    onAddArchiveFolder = {
+                        val newName = generateArchiveFolderName(archiveFolders)
+                        saveArchiveFolders(appPrefs, archiveFolders + newName)
+                        taskDataEpoch += 1
+                        draftStatusMessage = "已新增档案：$newName。"
+                    },
+                    onDeleteArchiveFolder = { folderName ->
+                        savedTasks.filter { it.archiveFolder == folderName }.forEach { task ->
+                            taskLocalStore.save(task.copy(isArchived = false, archiveFolder = null))
+                        }
+                        saveArchiveFolders(appPrefs, archiveFolders - folderName)
+                        taskDataEpoch += 1
+                        draftStatusMessage = "已删除档案：$folderName。"
+                    },
                     modifier = Modifier.fillMaxSize(),
                 )
                 AppScreen.RESULT -> ResultRoute(
@@ -787,9 +1193,7 @@ fun CreativeAiApp() {
                         audioPreviewPlayer.togglePlayback(assetUri)
                     },
                     onRetranscribeAudio = { assetUri ->
-                        if (Build.VERSION.SDK_INT < 33) {
-                            draftStatusMessage = "音频文件级重跑转写需要 Android 13 及以上系统。"
-                        } else if (retranscribingAudioAssetUri == null) {
+                        if (retranscribingAudioAssetUri == null) {
                             retranscribingAudioAssetUri = assetUri
                             audioPreviewPlayer.stop()
                             draftStatusMessage = "正在从已保存录音重跑转写..."
@@ -829,6 +1233,40 @@ fun CreativeAiApp() {
                             }
                         }
                     },
+                    onOpenAsset = { assetUri ->
+                        context.openAssetExternally(Uri.parse(assetUri))
+                    },
+                    onRunAgentAction = { actionId ->
+                        val memo = latestMemo ?: return@ResultRoute
+                        val prompt = buildAgentHandoffPrompt(
+                            actionId = actionId,
+                            memo = memo,
+                            execution = lastExecution,
+                        )
+                        when (actionId) {
+                            "share" -> {
+                                context.sharePlainText(
+                                    subject = "${memo.taskId} - MemoMind 纪要",
+                                    text = prompt,
+                                )
+                                draftStatusMessage = "已打开系统分享，可继续发给电脑端协作工具。"
+                            }
+                            "email" -> {
+                                context.composeEmailDraft(
+                                    subject = "MemoMind 纪要协作任务",
+                                    body = prompt,
+                                )
+                                draftStatusMessage = "已生成邮件草稿。"
+                            }
+                            else -> {
+                                context.copyTextToClipboard(
+                                    label = "MemoMind Agent Handoff",
+                                    text = prompt,
+                                )
+                                draftStatusMessage = "已复制 ${resultUiState.agentActions.firstOrNull { it.id == actionId }?.label ?: "Agent 任务"}。"
+                            }
+                        }
+                    },
                     modifier = Modifier.fillMaxSize(),
                 )
             }
@@ -843,17 +1281,10 @@ private fun composeDraftSourceSections(
     supplementalText: String,
 ): List<SourceInputSection> {
     return listOfNotNull(
-        imageBrief.takeIf { it.isNotBlank() }?.let {
-            SourceInputSection(
-                channel = SourceInputChannel.IMAGE_BRIEF,
-                label = "图片内容补充",
-                content = it.trim(),
-            )
-        },
         ocrText.takeIf { it.isNotBlank() }?.let {
             SourceInputSection(
                 channel = SourceInputChannel.OCR_TEXT,
-                label = "OCR 文本",
+                label = "图片识别文本",
                 content = it.trim(),
             )
         },
@@ -887,38 +1318,6 @@ private fun composeUnifiedSourceText(
             }
         }
     }.trim()
-}
-
-private fun defaultDraftImageBrief(): String {
-    return """
-        白板拍照里有三块内容：端侧优先、云端兜底、结构化纪要；右侧还画了“图片 + 录音 + 文字 -> JSON 纪要”的流程箭头。
-    """.trimIndent()
-}
-
-private fun defaultDraftOcrText(): String {
-    return """
-        推荐技术栈：Qwen3.5-0.8B/2B/4B，Qwen3-VL-2B/4B；推荐推理框架：MNN；推荐工具：Qwen Code。
-    """.trimIndent()
-}
-
-private fun defaultDraftTranscript(): String {
-    return """
-        我们先不要等完整多模态模型，把图片理解、OCR、录音转写都当成前处理层，最后统一变成文本上下文，再进本地 Qwen 做纪要。
-    """.trimIndent()
-}
-
-private fun defaultDraftNotes(): String {
-    return """
-        项目名称：Creative AI Android
-        会议类型：创意产品讨论
-        参会角色：产品、设计、Android、算法
-        原始记录：
-        1. 我们希望用户可以把图片、录音和文字一起丢进来，一键得到结构化纪要。
-        2. 首版优先做头脑风暴和会议场景，结果页需要同时给出总结、结论、行动项和风险。
-        3. 技术上坚持本地优先，核心链路必须在手机端运行，云端只做增强。
-        4. 当前已经接入 Qwen + MNN，需要继续验证真机上的稳定性和生成质量。
-        5. 下一步要把文字输入、历史页和结果页都串起来，形成可演示闭环。
-    """.trimIndent()
 }
 
 private fun SelectedLocalAsset.toTaskAssetRef(
@@ -955,6 +1354,112 @@ private fun ParsedAssetRef.toSelectedLocalAsset(): SelectedLocalAsset {
     )
 }
 
+private fun List<SourceInputSection>.firstContent(
+    channel: SourceInputChannel,
+): String {
+    return firstOrNull { it.channel == channel }?.content.orEmpty()
+}
+
+private fun List<String>.firstParsedAsset(
+    kindLabel: String,
+): ParsedAssetRef? {
+    return asSequence()
+        .mapNotNull(::parseAssetRef)
+        .firstOrNull { it.kindLabel == kindLabel }
+}
+
+private fun List<String>.parsedAssets(
+    kindLabel: String,
+): List<ParsedAssetRef> {
+    return mapNotNull(::parseAssetRef)
+        .filter { it.kindLabel == kindLabel }
+}
+
+private fun restoreDraftSourceSections(
+    task: MemoTask,
+    memo: StructuredMemo?,
+): List<SourceInputSection> {
+    if (task.sourceSections.isNotEmpty()) return task.sourceSections
+    val parsedSections = parseUnifiedSourceText(task.sourceText)
+    if (parsedSections.isNotEmpty()) return parsedSections
+    val outlineSections = memo?.sourceOutline
+        ?.mapNotNull(::parseOutlineSourceSection)
+        .orEmpty()
+    if (outlineSections.isNotEmpty()) return outlineSections
+    return task.sourceText.takeIf { it.isNotBlank() }
+        ?.let {
+            listOf(
+                SourceInputSection(
+                    channel = SourceInputChannel.SUPPLEMENTAL_TEXT,
+                    label = "补充文字",
+                    content = it.trim(),
+                ),
+            )
+        }
+        .orEmpty()
+}
+
+private fun parseUnifiedSourceText(
+    sourceText: String,
+): List<SourceInputSection> {
+    if (sourceText.isBlank()) return emptyList()
+    val matches = Regex("""\[(.+?)]\s*([\s\S]*?)(?=\n\[[^\]]+]|$)""")
+        .findAll(sourceText.trim())
+        .mapNotNull { match ->
+            val label = match.groupValues[1].trim()
+            val content = match.groupValues[2].trim()
+            if (label == "统一文本上下文" || content.isBlank()) {
+                null
+            } else {
+                sourceInputChannelFromLabel(label)?.let { channel ->
+                    SourceInputSection(
+                        channel = channel,
+                        label = label,
+                        content = content,
+                    )
+                }
+            }
+        }
+        .toList()
+    return matches
+}
+
+private fun parseOutlineSourceSection(
+    raw: String,
+): SourceInputSection? {
+    val delimiterIndex = raw.indexOf(':')
+    if (delimiterIndex <= 0) return null
+    val label = raw.substring(0, delimiterIndex).trim()
+    val content = raw.substring(delimiterIndex + 1).trim()
+    if (content.isBlank()) return null
+    val channel = sourceInputChannelFromLabel(label) ?: return null
+    return SourceInputSection(
+        channel = channel,
+        label = label,
+        content = content,
+    )
+}
+
+private fun sourceInputChannelFromLabel(
+    label: String,
+): SourceInputChannel? {
+    return when (label.trim()) {
+        "图片内容补充" -> SourceInputChannel.IMAGE_BRIEF
+        "OCR 文本", "图片识别文本" -> SourceInputChannel.OCR_TEXT
+        "录音转写文本" -> SourceInputChannel.AUDIO_TRANSCRIPT
+        "补充文字" -> SourceInputChannel.SUPPLEMENTAL_TEXT
+        else -> null
+    }
+}
+
+@Composable
+private fun AppScreen.icon() = when (this) {
+    AppScreen.HOME -> Icons.Outlined.Settings
+    AppScreen.CAPTURE -> Icons.Outlined.AssignmentTurnedIn
+    AppScreen.HISTORY -> Icons.Outlined.History
+    AppScreen.RESULT -> Icons.Outlined.Article
+}
+
 private fun android.content.Context.persistReadPermission(
     uri: Uri,
 ) {
@@ -986,4 +1491,287 @@ private fun android.content.Context.resolveSelectedLocalAsset(
         displayName = displayName,
         mimeTypeLabel = mimeType,
     )
+}
+
+private fun appendSelectedImages(
+    existing: List<SelectedLocalAsset>,
+    incoming: List<SelectedLocalAsset>,
+    maxCount: Int,
+): List<SelectedLocalAsset> {
+    return (existing + incoming)
+        .distinctBy { it.uri }
+        .take(maxCount)
+}
+
+private fun replaceSelectedImageAsset(
+    existing: List<SelectedLocalAsset>,
+    sourceUri: String,
+    replacement: SelectedLocalAsset,
+): List<SelectedLocalAsset> {
+    return existing.map { asset ->
+        if (asset.uri == sourceUri) {
+            replacement
+        } else {
+            asset
+        }
+    }
+}
+
+private fun android.content.Context.createCapturedImageUri(
+    storage: AppStorageDirectories,
+): Uri {
+    val imageFile = File(
+        storage.capturedImagesDir,
+        "captured_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.jpg",
+    )
+    imageFile.parentFile?.mkdirs()
+    return FileProvider.getUriForFile(
+        this,
+        "$packageName.fileprovider",
+        imageFile,
+    )
+}
+
+private fun android.content.Context.createImageCropOutputUri(
+    storage: AppStorageDirectories,
+): Uri {
+    val croppedFile = File(
+        storage.cacheDir,
+        "cropped_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.jpg",
+    )
+    croppedFile.parentFile?.mkdirs()
+    return FileProvider.getUriForFile(
+        this,
+        "$packageName.fileprovider",
+        croppedFile,
+    )
+}
+
+private fun android.content.Context.openAssetExternally(
+    uri: Uri,
+) {
+    val intent = Intent(Intent.ACTION_VIEW).apply {
+        setData(uri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    runCatching { startActivity(intent) }
+}
+
+private fun android.content.Context.copyTextToClipboard(
+    label: String,
+    text: String,
+) {
+    val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    clipboard.setPrimaryClip(ClipData.newPlainText(label, text))
+}
+
+private fun android.content.Context.sharePlainText(
+    subject: String,
+    text: String,
+) {
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_SUBJECT, subject)
+        putExtra(Intent.EXTRA_TEXT, text)
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    startActivity(Intent.createChooser(intent, "分享纪要任务"))
+}
+
+private fun android.content.Context.composeEmailDraft(
+    subject: String,
+    body: String,
+) {
+    val intent = Intent(Intent.ACTION_SENDTO).apply {
+        data = Uri.parse("mailto:")
+        putExtra(Intent.EXTRA_SUBJECT, subject)
+        putExtra(Intent.EXTRA_TEXT, body)
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    runCatching { startActivity(intent) }
+}
+
+private fun buildAgentHandoffPrompt(
+    actionId: String,
+    memo: StructuredMemo,
+    execution: StructuredMemoTaskExecutionResult,
+): String {
+    val taskTitle = execution.task.title.ifBlank { "未命名纪要任务" }
+    val coreMemo = buildString {
+        appendLine("任务标题：$taskTitle")
+        appendLine("一句话总结：${memo.oneLineSummary}")
+        appendLine("背景：${memo.background}")
+        if (memo.facts.isNotEmpty()) {
+            appendLine("关键要点：")
+            memo.facts.forEachIndexed { index, item ->
+                appendLine("${index + 1}. $item")
+            }
+        }
+        if (memo.actionItems.isNotEmpty()) {
+            appendLine("行动项：")
+            memo.actionItems.forEachIndexed { index, item ->
+                appendLine("${index + 1}. ${listOfNotNull(item.task, item.owner.takeIf { it.isNotBlank() }, item.deadline?.takeIf { it.isNotBlank() }).joinToString(" | ")}")
+            }
+        }
+        if (memo.risks.isNotEmpty()) {
+            appendLine("风险提示：")
+            memo.risks.forEachIndexed { index, item ->
+                appendLine("${index + 1}. $item")
+            }
+        }
+        if (memo.tags.isNotEmpty()) {
+            appendLine("标签：${memo.tags.joinToString("、")}")
+        }
+        if (memo.sourceOutline.isNotEmpty()) {
+            appendLine("输入来源：${memo.sourceOutline.joinToString(" / ")}")
+        }
+    }.trim()
+    val roleInstruction = when (actionId) {
+        "codex" -> "请把这份纪要继续整理成图表建议、表格结构、后续执行步骤，并在必要时给出可直接发送邮件的内容。"
+        "claude_code" -> "请把这份纪要继续提炼成更完整的分析稿、结构化提纲和适合复盘的表格。"
+        "trae" -> "请把这份纪要整理成项目任务拆解、流程图或图表说明，并明确优先级。"
+        "work_buddy" -> "请把这份纪要整理成工作待办、周报素材、对外同步文案和邮件草稿。"
+        "email" -> "请将下面纪要改写成一封正式但简洁的邮件。"
+        else -> "请基于下面纪要继续整理成清晰的表格、图表建议和执行清单。"
+    }
+    return """
+        你现在是 MemoMind 联动的桌面 Agent。
+        
+        $roleInstruction
+        
+        输出要求：
+        1. 先给出简短总览。
+        2. 再给出适合继续处理的结构化结果。
+        3. 如果适合，可补充图表建议、邮件草稿或任务拆解。
+        
+        以下是纪要内容：
+        $coreMemo
+    """.trimIndent()
+}
+
+private fun chooseImageRecognitionText(
+    ocrText: String,
+    visionText: String,
+): String {
+    val cleanedOcr = cleanRecognitionCandidate(ocrText)
+    val cleanedVision = cleanRecognitionCandidate(visionText)
+    if (cleanedOcr.isBlank()) return cleanedVision
+    if (cleanedVision.isBlank()) return cleanedOcr
+    val ocrScore = scoreRecognitionText(cleanedOcr)
+    val visionScore = scoreRecognitionText(cleanedVision)
+    val normalizedOcr = normalizeRecognitionForCompare(cleanedOcr)
+    val normalizedVision = normalizeRecognitionForCompare(cleanedVision)
+    return if (
+        normalizedOcr == normalizedVision ||
+        normalizedVision.contains(normalizedOcr) ||
+        visionScore >= maxOf(44, ocrScore - 8)
+    ) {
+        cleanedVision
+    } else {
+        cleanedOcr
+    }
+}
+
+private fun cleanRecognitionCandidate(
+    value: String,
+): String {
+    return value
+        .replace(Regex("""^\[第\d+张图片识别文本]\s*"""), "")
+        .replace(Regex("""^第\d+张图片识别文本\s*[:：]?\s*"""), "")
+        .replace(Regex("""^(图片识别文本|OCR 文本|版面理解)\s*[:：]?\s*"""), "")
+        .replace(Regex("""^\s*paper\s*$""", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("""^\s*ocr\s*$""", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("""[ \t]+"""), " ")
+        .lineSequence()
+        .map { it.trim() }
+        .filter { it.isNotBlank() }
+        .filterNot { it.equals("paper", ignoreCase = true) || it.equals("ocr", ignoreCase = true) }
+        .joinToString("\n")
+        .trim()
+}
+
+private fun normalizeRecognitionForCompare(
+    value: String,
+): String {
+    return value
+        .replace(Regex("""\s+"""), "")
+        .lowercase(Locale.ROOT)
+}
+
+private fun scoreRecognitionText(
+    value: String,
+): Int {
+    val alphaNumOrCjk = value.count {
+        it.isLetterOrDigit() || Character.UnicodeScript.of(it.code) == Character.UnicodeScript.HAN
+    }
+    val lineBonus = value.lineSequence().count { it.isNotBlank() } * 10
+    val noisePenalty = listOf(
+        "<tool_call>",
+        "</think>",
+        "图片识别文本",
+        "ocr",
+        "paper",
+    ).sumOf { token ->
+        Regex(Regex.escape(token), RegexOption.IGNORE_CASE).findAll(value).count()
+    } * 18
+    val symbolPenalty = value.count { it in setOf('{', '}', '[', ']', '<', '>', '|', '_', '~') } * 4
+    return alphaNumOrCjk + lineBonus - noisePenalty - symbolPenalty
+}
+
+private fun formatNumberedLines(
+    items: List<String>,
+): String {
+    return items
+        .filter { it.isNotBlank() }
+        .mapIndexed { index, item -> "${index + 1}. ${item.trim()}" }
+        .joinToString("\n")
+}
+
+private fun formatTagLines(
+    tags: List<String>,
+): String {
+    return tags
+        .filter { it.isNotBlank() }
+        .joinToString("\n") { "◇ ${it.trim()}" }
+}
+
+private fun loadArchiveFolders(
+    prefs: android.content.SharedPreferences,
+    tasks: List<MemoTask>,
+): List<String> {
+    val persisted = prefs.getStringSet("archive_folders", emptySet()).orEmpty()
+    val fromTasks = tasks.mapNotNull { it.archiveFolder }.toSet()
+    return (persisted + fromTasks).sorted()
+}
+
+private fun saveArchiveFolders(
+    prefs: android.content.SharedPreferences,
+    folders: Collection<String>,
+) {
+    prefs.edit().putStringSet("archive_folders", folders.filter { it.isNotBlank() }.toSet()).apply()
+}
+
+private fun replaceArchiveFolder(
+    prefs: android.content.SharedPreferences,
+    oldName: String,
+    newName: String,
+) {
+    val current = prefs.getStringSet("archive_folders", emptySet()).orEmpty().toMutableSet()
+    current.remove(oldName)
+    current.add(newName)
+    prefs.edit().putStringSet("archive_folders", current).apply()
+}
+
+private fun generateArchiveFolderName(
+    existing: List<String>,
+): String {
+    val dateLabel = SimpleDateFormat("MM月dd日", Locale.US).format(Date())
+    val base = "档案 $dateLabel"
+    if (base !in existing) return base
+    var index = 2
+    while ("$base-$index" in existing) {
+        index += 1
+    }
+    return "$base-$index"
 }

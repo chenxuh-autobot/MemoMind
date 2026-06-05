@@ -63,6 +63,10 @@ TARGET_ROOT="$PROJECT_ROOT/ai/mnn/src/main/cpp/third_party/mnn"
 TARGET_INCLUDE_DIR="$TARGET_ROOT/include"
 TARGET_LIB_DIR="$TARGET_ROOT/lib/arm64-v8a"
 SOURCE_LLM_INCLUDE_DIR="$SOURCE_ROOT/transformers/llm/engine/include/llm"
+SOURCE_PROFILE_PATH="$BUILD_DIR/mnn_build_profile.json"
+TARGET_PROFILE_PATH="$TARGET_ROOT/mnn_build_profile.json"
+APP_ASSET_PROFILE_DIR="$PROJECT_ROOT/app/src/main/assets/mnn"
+APP_ASSET_PROFILE_PATH="$APP_ASSET_PROFILE_DIR/mnn_build_profile.json"
 
 mkdir -p "$TARGET_INCLUDE_DIR" "$TARGET_LIB_DIR"
 rm -rf "$TARGET_INCLUDE_DIR/MNN"
@@ -72,6 +76,11 @@ if [[ -d "$SOURCE_LLM_INCLUDE_DIR" ]]; then
   cp -R "$SOURCE_LLM_INCLUDE_DIR" "$TARGET_INCLUDE_DIR/"
 fi
 cp "$SOURCE_LIB_PATH" "$TARGET_LIB_DIR/libMNN.so"
+mkdir -p "$APP_ASSET_PROFILE_DIR"
+if [[ -f "$SOURCE_PROFILE_PATH" ]]; then
+  cp "$SOURCE_PROFILE_PATH" "$TARGET_PROFILE_PATH"
+  cp "$SOURCE_PROFILE_PATH" "$APP_ASSET_PROFILE_PATH"
+fi
 
 echo "Installed MNN prebuilt into project."
 echo "Target include: $TARGET_INCLUDE_DIR/MNN"
@@ -79,3 +88,6 @@ if [[ -d "$TARGET_INCLUDE_DIR/llm" ]]; then
   echo "Target llm api: $TARGET_INCLUDE_DIR/llm"
 fi
 echo "Target runtime: $TARGET_LIB_DIR/libMNN.so"
+if [[ -f "$TARGET_PROFILE_PATH" ]]; then
+  echo "Target build profile: $TARGET_PROFILE_PATH"
+fi

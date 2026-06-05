@@ -6,6 +6,7 @@ import cn.chenxuhang.creativeai.core.model.StructuredMemo
 interface MemoTaskLocalDataSource {
     fun getAll(): List<MemoTask>
     fun save(task: MemoTask)
+    fun delete(taskId: String)
 }
 
 class InMemoryMemoTaskLocalDataSource : MemoTaskLocalDataSource {
@@ -18,6 +19,10 @@ class InMemoryMemoTaskLocalDataSource : MemoTaskLocalDataSource {
         tasks += task
     }
 
+    override fun delete(taskId: String) {
+        tasks.removeAll { it.id == taskId }
+    }
+
     fun describe(): String = "InMemoryMemoTaskLocalDataSource(${tasks.size} tasks)"
 }
 
@@ -25,6 +30,7 @@ interface StructuredMemoLocalDataSource {
     fun getAll(): List<StructuredMemo>
     fun findByTaskId(taskId: String): StructuredMemo?
     fun save(memo: StructuredMemo)
+    fun delete(taskId: String)
 }
 
 class InMemoryStructuredMemoLocalDataSource : StructuredMemoLocalDataSource {
@@ -39,6 +45,10 @@ class InMemoryStructuredMemoLocalDataSource : StructuredMemoLocalDataSource {
     override fun save(memo: StructuredMemo) {
         memos.removeAll { it.taskId == memo.taskId }
         memos += memo
+    }
+
+    override fun delete(taskId: String) {
+        memos.removeAll { it.taskId == taskId }
     }
 
     fun describe(): String = "InMemoryStructuredMemoLocalDataSource(${memos.size} memos)"

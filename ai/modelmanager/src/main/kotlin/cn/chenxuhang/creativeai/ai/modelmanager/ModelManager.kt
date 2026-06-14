@@ -120,8 +120,12 @@ class InMemoryModelManager(
         val manifest = models.firstOrNull { it.modelId == modelId } ?: return ModelInstallStatus.BROKEN
         val installRoot = File(localDirectory)
         if (!installRoot.exists()) return ModelInstallStatus.NOT_INSTALLED
-        val allFilesExist = manifest.assets.all { asset -> File(installRoot, asset.fileName).exists() }
-        return if (allFilesExist) ModelInstallStatus.INSTALLED else ModelInstallStatus.BROKEN
+        val existingFileCount = manifest.assets.count { asset -> File(installRoot, asset.fileName).exists() }
+        return when {
+            existingFileCount == 0 -> ModelInstallStatus.NOT_INSTALLED
+            existingFileCount == manifest.assets.size -> ModelInstallStatus.INSTALLED
+            else -> ModelInstallStatus.BROKEN
+        }
     }
 
     companion object {

@@ -61,15 +61,24 @@ class StructuredMemoTaskExecutor(
             maxNewTokens = 448,
         )
         if (!generation.success) {
-            val failedTask = runningTask.copy(
-                status = "FAILED",
-                summary = generation.errorMessage ?: "generation failed",
+            val fallbackMemo = buildFallbackMemo(
+                taskId = taskId,
+                rawOutput = generation.outputText.orEmpty(),
+                repairedOutput = "",
+                request = request,
+                fallbackReason = generation.errorMessage ?: "generation-failed",
             )
-            taskLocalDataSource.save(failedTask)
+            memoLocalDataSource.save(fallbackMemo)
+            val completedFallbackTask = runningTask.copy(
+                status = "COMPLETED",
+                summary = fallbackMemo.oneLineSummary,
+            )
+            taskLocalDataSource.save(completedFallbackTask)
             return StructuredMemoTaskExecutionResult(
-                task = failedTask,
+                task = completedFallbackTask,
+                memo = fallbackMemo,
                 rawOutput = generation.outputText,
-                errorMessage = generation.errorMessage,
+                errorMessage = generation.errorMessage ?: "generation-failed",
             )
         }
 
@@ -249,6 +258,7 @@ class StructuredMemoTaskExecutor(
         rawOutput: String,
         repairedOutput: String,
         request: StructuredMemoTaskRequest,
+        fallbackReason: String = "model-output-was-not-valid-json",
     ): StructuredMemo {
         val candidateOutput = if (repairedOutput.isNotBlank()) repairedOutput else rawOutput
         val cleanedOutput = sanitizeModelOutput(candidateOutput)
@@ -315,7 +325,7 @@ class StructuredMemoTaskExecutor(
             put("tags", JSONArray(tags))
             put(
                 "_fallbackReason",
-                "model-output-was-not-valid-json",
+                fallbackReason,
             )
             put(
                 "_rawOutputPreview",
@@ -339,6 +349,7 @@ class StructuredMemoTaskExecutor(
                     add("local-task-executor")
                     add("qwen-mnn")
                     add("fallback-structured-memo")
+                    add("generation-fallback:$fallbackReason")
                     addAll(request.sourceSections.map { "input:${it.channel.name.lowercase()}" })
                 },
                 sourceOutline = request.sourceSections

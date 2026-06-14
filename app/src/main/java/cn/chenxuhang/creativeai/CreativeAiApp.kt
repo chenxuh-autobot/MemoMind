@@ -183,7 +183,7 @@ fun CreativeAiApp() {
                     "visual.mnn.weight",
                 ),
                 bundleVersion = "qwen-vl-2b-instruct-mnn-v1",
-                bundledInApk = true,
+                bundledInApk = BuildConfig.BUNDLE_QWEN_VL_MODEL,
             ),
         )
     }
@@ -229,29 +229,6 @@ fun CreativeAiApp() {
                 hasWeights = false,
                 hasConfig = false,
                 missingFiles = currentModelSpec.requiredFiles,
-            )
-        }
-    }
-    val sessionOpen = remember(mnnRuntime, currentModelDirectory, selectedModelId, modelBootstrapEpoch, isBundledModelReady, currentModelUsesVisionPath) {
-        if (isBundledModelReady) {
-            mnnRuntime.openSession(
-                MnnSessionConfig(
-                    modelId = selectedModelId,
-                    modelDirectory = currentModelDirectory.absolutePath,
-                    backend = InferenceBackend.CPU,
-                    threadCount = 4,
-                    enableLowMemoryMode = true,
-                    enableMultimodalPath = currentModelUsesVisionPath,
-                    cpuSmeCoreCount = smeCoreCount,
-                    cpuSme2NeonDivisionRatio = smeDivisionRatio,
-                ),
-            )
-        } else {
-            cn.chenxuhang.creativeai.core.model.SessionOpenResult(
-                success = false,
-                runtimeVersion = mnnRuntime.runtimeVersion(),
-                backendName = "bootstrap-pending",
-                errorMessage = bundledModelResults[selectedModelId]?.message ?: "Bundled model is still preparing.",
             )
         }
     }
@@ -531,7 +508,7 @@ fun CreativeAiApp() {
         }
     }
 
-    LaunchedEffect(sessionOpen.success, sessionOpen.errorMessage, generationConfig.modelDirectory, selectedModelId, modelBootstrapEpoch) {
+    LaunchedEffect(generationConfig.modelDirectory, selectedModelId, modelBootstrapEpoch) {
         val persistedTasks = taskLocalStore.getAll()
         val persistedMemos = memoLocalStore.getAll()
         val hasPersistedResults = persistedTasks.isNotEmpty() || persistedMemos.isNotEmpty()
@@ -546,17 +523,6 @@ fun CreativeAiApp() {
                 ),
                 memo = persistedMemos.lastOrNull(),
                 rawOutput = persistedMemos.lastOrNull()?.rawJson,
-            )
-        } else if (isBundledModelReady && !sessionOpen.success) {
-            StructuredMemoTaskExecutionResult(
-                task = MemoTask(
-                    id = "blocked",
-                    title = "本地纪要任务",
-                    type = "structured_memo",
-                    status = "BLOCKED",
-                    summary = sessionOpen.errorMessage ?: "session open failed",
-                ),
-                errorMessage = sessionOpen.errorMessage ?: "session open failed",
             )
         } else {
             StructuredMemoTaskExecutionResult(
@@ -589,7 +555,6 @@ fun CreativeAiApp() {
         installPlan,
         installStatus,
         modelProbe,
-        sessionOpen,
         selectedModelId,
         bundledModelResults,
         currentModelDirectory,
@@ -631,14 +596,24 @@ fun CreativeAiApp() {
                     icon = Icons.Outlined.DeveloperBoard,
                 ),
                 SystemComponentItem(
-                    title = "本地会话打开",
-                    detail = if (sessionOpen.success) {
-                        "当前模型 ${selectedModelId} 会话已成功拉起，backend=${sessionOpen.backendName}。"
-                    } else {
-                        "会话还没成功拉起，backend=${sessionOpen.backendName}，错误：${sessionOpen.errorMessage ?: "待检查"}。"
+                    title = "纪要生成策略",
+                    detail = when {
+                        isBundledModelReady -> {
+                            "当前模型 ${selectedModelId} 已准备完成，真正生成时才会按需加载本地会话，避免启动即吃满内存。"
+                        }
+                        BuildConfig.BUNDLE_QWEN_VL_MODEL -> {
+                            bundledModelResults[selectedModelId]?.message ?: "首次启动正在准备本地模型，请稍候..."
+                        }
+                        else -> {
+                            "当前默认分发的是轻量包，未内置 2GB 级本地大模型；提交任务时会自动回退到轻量纪要整理。"
+                        }
                     },
-                    statusLabel = if (sessionOpen.success) "成功" else "失败",
-                    isReady = sessionOpen.success,
+                    statusLabel = when {
+                        isBundledModelReady -> "按需加载"
+                        BuildConfig.BUNDLE_QWEN_VL_MODEL -> "准备中"
+                        else -> "轻量模式"
+                    },
+                    isReady = isBundledModelReady || !BuildConfig.BUNDLE_QWEN_VL_MODEL,
                     icon = Icons.Outlined.CheckCircle,
                 ),
                 SystemComponentItem(
@@ -659,7 +634,7 @@ fun CreativeAiApp() {
                         add("图片理解更强")
                         add("多图语境更稳")
                         add("适合图文混合纪要")
-                        add("已随包内置")
+                        add(if (BuildConfig.BUNDLE_QWEN_VL_MODEL) "已随包内置" else "默认不随包分发")
                     }
                     add("RAM ${it.manifest.recommendedMinRamGb}GB+")
                     add("最大输入约 ${it.manifest.recommendedMaxInput} tokens")
@@ -733,7 +708,12 @@ fun CreativeAiApp() {
 
     val captureStatusMessage = remember(draftStatusMessage, bundledModelResults, selectedModelId, isBundledModelReady) {
         if (!isBundledModelReady) {
-            bundledModelResults[selectedModelId]?.message ?: "首次启动正在准备本地模型，请稍候..."
+            if (BuildConfig.BUNDLE_QWEN_VL_MODEL) {
+                bundledModelResults[selectedModelId]?.message ?: "首次启动正在准备本地模型，请稍候..."
+            } else {
+                draftStatusMessage
+                    ?: "当前为轻量包，提交任务会先走轻量纪要整理；后续可再接入本地或云端模型。"
+            }
         } else {
             draftStatusMessage
         }
@@ -793,7 +773,7 @@ fun CreativeAiApp() {
             },
             audioToggleLabel = "使用麦克风转写",
             isSubmitting = isSubmittingDraft,
-            submitEnabled = isBundledModelReady && draftTitle.isNotBlank() && sourceSections.isNotEmpty(),
+            submitEnabled = draftTitle.isNotBlank() && sourceSections.isNotEmpty(),
             statusMessage = captureStatusMessage,
         )
     }
@@ -1091,7 +1071,11 @@ fun CreativeAiApp() {
                             selectedAudioAsset?.let { add(it.toTaskAssetRef("AUDIO")) }
                         }
                         if (isSubmittingDraft || draftTitle.isBlank() || sourceSections.isEmpty()) return@CaptureRoute
-                        draftStatusMessage = "正在调用本地 Qwen 生成结构化纪要..."
+                        draftStatusMessage = if (isBundledModelReady) {
+                            "正在调用本地 Qwen 生成结构化纪要..."
+                        } else {
+                            "本地大模型未就绪，正在使用轻量纪要整理..."
+                        }
                         isSubmittingDraft = true
                         scope.launch {
                             val result = withContext(Dispatchers.IO) {
@@ -1102,15 +1086,25 @@ fun CreativeAiApp() {
                                         sourceText = composeUnifiedSourceText(sourceSections),
                                         sourceSections = sourceSections,
                                         assetRefs = assetRefs,
-                                        processingMode = ProcessingMode.LOCAL_ONLY,
+                                        processingMode = if (isBundledModelReady) {
+                                            ProcessingMode.LOCAL_ONLY
+                                        } else {
+                                            ProcessingMode.LOCAL_PREFERRED
+                                        },
                                         sessionConfig = generationConfig,
                                     ),
                                 )
                             }
                             lastExecution = result
                             isSubmittingDraft = false
-                            if (result.memo != null) {
-                                draftStatusMessage = "纪要生成完成，已写入本地任务流。"
+                            val generatedMemo = result.memo
+                            if (generatedMemo != null) {
+                                val usedFallbackMemo = generatedMemo.sourceTrace.any { it.startsWith("generation-fallback:") }
+                                draftStatusMessage = if (usedFallbackMemo) {
+                                    "轻量纪要已生成并写入本地任务流；后续接入本地或云端模型后可再生成更高质量版本。"
+                                } else {
+                                    "纪要生成完成，已写入本地任务流。"
+                                }
                                 hiddenResultAssetUris = emptySet()
                                 clearCaptureDraft()
                                 currentScreen = AppScreen.RESULT

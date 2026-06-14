@@ -31,6 +31,23 @@ suspend fun Context.ensureBundledModelInstalled(
         )
     }
 
+    val totalAssetBytes = requiredFiles.sumOf { fileName ->
+        runCatching { assets.openFd("$assetDirectory/$fileName").length }.getOrDefault(0L)
+    }
+    val existingBytes = requiredFiles.sumOf { fileName ->
+        File(targetDirectory, fileName).takeIf(File::exists)?.length() ?: 0L
+    }
+    val requiredFreeBytes = (totalAssetBytes - existingBytes).coerceAtLeast(0L)
+    val safetyBufferBytes = 64L * 1024L * 1024L
+    if (requiredFreeBytes > 0L && targetDirectory.usableSpace < requiredFreeBytes + safetyBufferBytes) {
+        return@withContext BundledModelBootstrapResult(
+            success = false,
+            copiedFiles = emptyList(),
+            targetDirectory = targetDirectory.absolutePath,
+            message = "设备剩余空间不足，无法继续准备内置模型。",
+        )
+    }
+
     val readyMarkerVersion = readyMarker.takeIf(File::exists)?.readText()?.trim().orEmpty()
     val alreadyReady = readyMarkerVersion == bundleVersion && requiredFiles.all { fileName ->
         val targetFile = File(targetDirectory, fileName)
@@ -46,15 +63,34 @@ suspend fun Context.ensureBundledModelInstalled(
     }
 
     val copiedFiles = mutableListOf<String>()
-    requiredFiles.forEach { fileName ->
-        val targetFile = File(targetDirectory, fileName)
-        targetFile.parentFile?.mkdirs()
-        assets.open("$assetDirectory/$fileName").use { input ->
-            targetFile.outputStream().use { output ->
-                input.copyTo(output, bufferSize = 1024 * 128)
+    val installResult = runCatching {
+        requiredFiles.forEach { fileName ->
+            val targetFile = File(targetDirectory, fileName)
+            val tempFile = File(targetDirectory, "$fileName.part")
+            targetFile.parentFile?.mkdirs()
+            tempFile.parentFile?.mkdirs()
+            assets.open("$assetDirectory/$fileName").use { input ->
+                tempFile.outputStream().use { output ->
+                    input.copyTo(output, bufferSize = 1024 * 128)
+                }
             }
+            if (targetFile.exists()) {
+                targetFile.delete()
+            }
+            tempFile.renameTo(targetFile)
+            copiedFiles += fileName
         }
-        copiedFiles += fileName
+    }
+    installResult.exceptionOrNull()?.let { error ->
+        requiredFiles.forEach { fileName ->
+            File(targetDirectory, "$fileName.part").delete()
+        }
+        return@withContext BundledModelBootstrapResult(
+            success = false,
+            copiedFiles = copiedFiles,
+            targetDirectory = targetDirectory.absolutePath,
+            message = error.message ?: "Bundled model install failed.",
+        )
     }
 
     val unresolvedFiles = requiredFiles.filterNot { fileName ->

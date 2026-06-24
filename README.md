@@ -41,6 +41,8 @@ feature/history/    History and task review
 
 This is a source-focused repository, not a fully self-contained binary distribution.
 
+If you need the latest complete engineering package instead of the trimmed source-first repository, see [exfiles_download.txt](./exfiles_download.txt). That file points to the latest full project bundle shared outside GitHub.
+
 To compile the current app checkout, you must provide:
 
 - `app/libs/sherpa-onnx-1.13.2.aar`
@@ -53,6 +55,16 @@ For full on-device AI behavior, you will also need project-local assets that are
 - `ai/mnn/src/main/cpp/third_party/mnn/lib/`
 
 Without those larger assets, the repository is still useful for code review, UI work, orchestration changes, persistence changes, and general Android contribution.
+
+## Latest Complete Project Package
+
+The file [exfiles_download.txt](./exfiles_download.txt) records the download information for the latest complete project package.
+
+Use that package if you need:
+
+- the latest full engineering files
+- excluded local assets and external dependencies
+- a closer-to-owner local working copy than the GitHub source-only version
 
 ## Build Requirements
 

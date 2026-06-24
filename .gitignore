@@ -5,6 +5,8 @@ local.properties
 .DS_Store
 .tmp-*
 *.pyc
+LICENSE
+PACKAGE_NOTES.md
 
 build/
 **/build/
@@ -30,3 +32,8 @@ bridge/.codex-bridge/
 bridge/project_registry.json
 **/__pycache__/
 gradle.properties.bak
+bridge/
+docs/
+scripts/
+supabase/
+gradle/gradle-daemon-jvm.properties

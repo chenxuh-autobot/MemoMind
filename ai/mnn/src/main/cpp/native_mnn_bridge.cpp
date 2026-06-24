@@ -6,6 +6,7 @@
 #include <vector>
 #include <algorithm>
 #include <cctype>
+#include <mutex>
 
 #if defined(__aarch64__)
 #include <sys/auxv.h>
@@ -27,6 +28,27 @@ namespace {
 constexpr const char* kBridgeVersionStub = "creative-ai-mnn-bridge/0.4+stub";
 constexpr const char* kBridgeVersionRealMnn = "creative-ai-mnn-bridge/0.4+real-mnn";
 constexpr const char* kBridgeVersionRealLlm = "creative-ai-mnn-bridge/0.4+real-llm";
+
+#ifdef HAS_REAL_MNN_LLM
+struct LlmSessionDeleter {
+    void operator()(MNN::Transformer::Llm* llm) const {
+        if (llm != nullptr) {
+            MNN::Transformer::Llm::destroy(llm);
+        }
+    }
+};
+
+struct CachedLlmSession {
+    std::string key;
+    std::string modelId;
+    std::string modelDirectory;
+    std::string backendName;
+    std::unique_ptr<MNN::Transformer::Llm, LlmSessionDeleter> llm;
+};
+
+std::mutex gCachedLlmSessionMutex;
+CachedLlmSession gCachedLlmSession;
+#endif
 
 std::string jstringToStdString(JNIEnv* env, jstring value) {
     const char* utfChars = env->GetStringUTFChars(value, nullptr);
@@ -226,6 +248,20 @@ std::string buildRuntimeConfigJson(
     return config.str();
 }
 
+std::filesystem::path runtimeCacheDirectoryFor(
+        const std::filesystem::path& modelDirectory) {
+    return modelDirectory / ".mnn-cache";
+}
+
+void resetRuntimeCacheDirectory(
+        const std::filesystem::path& modelDirectory) {
+    const std::filesystem::path mmapDirectory = runtimeCacheDirectoryFor(modelDirectory);
+    std::error_code errorCode;
+    std::filesystem::remove_all(mmapDirectory, errorCode);
+    errorCode.clear();
+    std::filesystem::create_directories(mmapDirectory, errorCode);
+}
+
 std::string readTextFile(
         const std::filesystem::path& path) {
     std::ifstream input(path);
@@ -294,6 +330,94 @@ bool validateModelDirectoryForSession(
     }
     return true;
 }
+
+#ifdef HAS_REAL_MNN_LLM
+std::string buildSessionKey(
+        const std::string& modelId,
+        const std::string& modelDirectory,
+        const std::string& backendName,
+        int threadCount,
+        bool enableLowMemoryMode,
+        int cpuSmeCoreCount,
+        int cpuSme2NeonDivisionRatio) {
+    std::ostringstream key;
+    key << modelId
+        << "|dir=" << modelDirectory
+        << "|backend=" << backendName
+        << "|threads=" << threadCount
+        << "|lowMemory=" << (enableLowMemoryMode ? "1" : "0")
+        << "|smeCore=" << cpuSmeCoreCount
+        << "|smeRatio=" << cpuSme2NeonDivisionRatio;
+    return key.str();
+}
+
+void invalidateCachedSession() {
+    gCachedLlmSession.llm.reset();
+    gCachedLlmSession.key.clear();
+    gCachedLlmSession.modelId.clear();
+    gCachedLlmSession.modelDirectory.clear();
+    gCachedLlmSession.backendName.clear();
+}
+
+bool ensureCachedSessionLoaded(
+        const std::string& modelId,
+        const std::filesystem::path& root,
+        const std::string& backendName,
+        int threadCount,
+        bool enableLowMemoryMode,
+        int cpuSmeCoreCount,
+        int cpuSme2NeonDivisionRatio,
+        std::string& errorMessage) {
+    const std::string sessionKey = buildSessionKey(
+            modelId,
+            root.string(),
+            backendName,
+            threadCount,
+            enableLowMemoryMode,
+            cpuSmeCoreCount,
+            cpuSme2NeonDivisionRatio);
+    if (gCachedLlmSession.llm != nullptr && gCachedLlmSession.key == sessionKey) {
+        return true;
+    }
+
+    invalidateCachedSession();
+    resetRuntimeCacheDirectory(root);
+
+    const std::filesystem::path runtimeConfigPath = root / "config.json";
+    auto* llm = MNN::Transformer::Llm::createLLM(runtimeConfigPath.string());
+    if (llm == nullptr) {
+        errorMessage = "MNN LLM runtime failed to create cached session from config.json";
+        return false;
+    }
+
+    const std::string runtimeConfig = buildRuntimeConfigJson(
+            root,
+            backendName,
+            threadCount,
+            enableLowMemoryMode,
+            cpuSmeCoreCount,
+            cpuSme2NeonDivisionRatio);
+    llm->set_config(runtimeConfig);
+    const bool loaded = llm->load();
+    if (!loaded) {
+        const auto* context = llm->getContext();
+        const int statusCode = context == nullptr ? -999 : static_cast<int>(context->status);
+        MNN::Transformer::Llm::destroy(llm);
+        std::ostringstream error;
+        error << "MNN LLM load() failed while preparing cached session. modelId=" << modelId
+              << ", status=" << statusCode;
+        errorMessage = error.str();
+        return false;
+    }
+
+    gCachedLlmSession.key = sessionKey;
+    gCachedLlmSession.modelId = modelId;
+    gCachedLlmSession.modelDirectory = root.string();
+    gCachedLlmSession.backendName = backendName;
+    gCachedLlmSession.llm.reset(llm);
+    return true;
+}
+#endif
 
 }  // namespace
 
@@ -439,44 +563,23 @@ Java_cn_chenxuhang_creativeai_ai_mnn_NativeBackedMnnRuntime_nativeOpenSession(
     }
 
 #ifdef HAS_REAL_MNN_LLM
-    const std::filesystem::path runtimeConfigPath = root / "config.json";
-    auto* llm = MNN::Transformer::Llm::createLLM(runtimeConfigPath.string());
-    if (llm == nullptr) {
+    std::lock_guard<std::mutex> lock(gCachedLlmSessionMutex);
+    if (!ensureCachedSessionLoaded(
+                modelIdValue,
+                root,
+                backendNameValue,
+                static_cast<int>(threadCount),
+                enableLowMemoryMode == JNI_TRUE,
+                static_cast<int>(cpuSmeCoreCount),
+                static_cast<int>(cpuSme2NeonDivisionRatio),
+                validationError)) {
         return newSessionOpenResult(
                 env,
                 false,
                 runtimeVersionForCurrentBuild(),
                 backendNameValue,
                 "",
-                "MNN LLM runtime failed to create session from config.json");
-    }
-
-    const std::string runtimeConfig = buildRuntimeConfigJson(
-            root,
-            backendNameValue,
-            static_cast<int>(threadCount),
-            enableLowMemoryMode == JNI_TRUE,
-            static_cast<int>(cpuSmeCoreCount),
-            static_cast<int>(cpuSme2NeonDivisionRatio));
-    llm->set_config(runtimeConfig);
-    const bool loaded = llm->load();
-    const auto* context = llm->getContext();
-    const int statusCode = context == nullptr ? -999 : static_cast<int>(context->status);
-    MNN::Transformer::Llm::destroy(llm);
-
-    if (!loaded) {
-        std::ostringstream error;
-        error << "MNN LLM load() failed. backend=" << backendNameValue
-              << ", threadCount=" << threadCount
-              << ", lowMemory=" << (enableLowMemoryMode == JNI_TRUE ? "true" : "false")
-              << ", status=" << statusCode;
-        return newSessionOpenResult(
-                env,
-                false,
-                runtimeVersionForCurrentBuild(),
-                backendNameValue,
-                "",
-                error.str());
+                validationError);
     }
 #elif defined(HAS_REAL_MNN)
     auto interpreter = MNN::Interpreter::createFromFile(modelPath.string().c_str());
@@ -539,51 +642,39 @@ Java_cn_chenxuhang_creativeai_ai_mnn_NativeBackedMnnRuntime_nativeGenerateText(
     }
 
 #ifdef HAS_REAL_MNN_LLM
-    const std::filesystem::path runtimeConfigPath = root / "config.json";
-    auto* llm = MNN::Transformer::Llm::createLLM(runtimeConfigPath.string());
-    if (llm == nullptr) {
+    std::lock_guard<std::mutex> lock(gCachedLlmSessionMutex);
+    if (!ensureCachedSessionLoaded(
+                modelIdValue,
+                root,
+                backendNameValue,
+                static_cast<int>(threadCount),
+                enableLowMemoryMode == JNI_TRUE,
+                static_cast<int>(cpuSmeCoreCount),
+                static_cast<int>(cpuSme2NeonDivisionRatio),
+                validationError)) {
         return newTextGenerationResult(
                 env,
                 false,
                 runtimeVersionForCurrentBuild(),
                 backendNameValue,
                 "",
-                "MNN LLM runtime failed to create generation session from config.json");
+                validationError);
     }
-
-    const std::string runtimeConfig = buildRuntimeConfigJson(
-            root,
-            backendNameValue,
-            static_cast<int>(threadCount),
-            enableLowMemoryMode == JNI_TRUE,
-            static_cast<int>(cpuSmeCoreCount),
-            static_cast<int>(cpuSme2NeonDivisionRatio));
-    llm->set_config(runtimeConfig);
-    const bool loaded = llm->load();
-    if (!loaded) {
-        const auto* context = llm->getContext();
-        const int statusCode = context == nullptr ? -999 : static_cast<int>(context->status);
-        MNN::Transformer::Llm::destroy(llm);
-        std::ostringstream error;
-        error << "MNN LLM load() failed before generation. modelId=" << modelIdValue
-              << ", status=" << statusCode;
-        return newTextGenerationResult(
-                env,
-                false,
-                runtimeVersionForCurrentBuild(),
-                backendNameValue,
-                "",
-                error.str());
-    }
+    auto* llm = gCachedLlmSession.llm.get();
+    llm->reset();
 
     std::ostringstream output;
     llm->response(promptValue, &output, nullptr, static_cast<int>(maxNewTokens));
     const std::string generatedText = output.str();
     const auto* context = llm->getContext();
     const int statusCode = context == nullptr ? -999 : static_cast<int>(context->status);
-    MNN::Transformer::Llm::destroy(llm);
+    llm->reset();
 
     if (generatedText.empty()) {
+        if (statusCode != static_cast<int>(MNN::Transformer::LlmStatus::NORMAL_FINISHED) &&
+            statusCode != static_cast<int>(MNN::Transformer::LlmStatus::MAX_TOKENS_FINISHED)) {
+            invalidateCachedSession();
+        }
         std::ostringstream error;
         error << "MNN LLM generated empty output. status=" << statusCode;
         return newTextGenerationResult(
@@ -677,42 +768,26 @@ Java_cn_chenxuhang_creativeai_ai_mnn_NativeBackedMnnRuntime_nativeGenerateVision
                 "Vision input image buffer is invalid.");
     }
 
-    const std::filesystem::path runtimeConfigPath = root / "config.json";
-    auto* llm = MNN::Transformer::Llm::createLLM(runtimeConfigPath.string());
-    if (llm == nullptr) {
+    std::lock_guard<std::mutex> lock(gCachedLlmSessionMutex);
+    if (!ensureCachedSessionLoaded(
+                modelIdValue,
+                root,
+                backendNameValue,
+                static_cast<int>(threadCount),
+                enableLowMemoryMode == JNI_TRUE,
+                static_cast<int>(cpuSmeCoreCount),
+                static_cast<int>(cpuSme2NeonDivisionRatio),
+                validationError)) {
         return newTextGenerationResult(
                 env,
                 false,
                 runtimeVersionForCurrentBuild(),
                 backendNameValue,
                 "",
-                "MNN LLM runtime failed to create vision generation session from config.json");
+                validationError);
     }
-
-    const std::string runtimeConfig = buildRuntimeConfigJson(
-            root,
-            backendNameValue,
-            static_cast<int>(threadCount),
-            enableLowMemoryMode == JNI_TRUE,
-            static_cast<int>(cpuSmeCoreCount),
-            static_cast<int>(cpuSme2NeonDivisionRatio));
-    llm->set_config(runtimeConfig);
-    const bool loaded = llm->load();
-    if (!loaded) {
-        const auto* context = llm->getContext();
-        const int statusCode = context == nullptr ? -999 : static_cast<int>(context->status);
-        MNN::Transformer::Llm::destroy(llm);
-        std::ostringstream error;
-        error << "MNN VL load() failed before generation. modelId=" << modelIdValue
-              << ", status=" << statusCode;
-        return newTextGenerationResult(
-                env,
-                false,
-                runtimeVersionForCurrentBuild(),
-                backendNameValue,
-                "",
-                error.str());
-    }
+    auto* llm = gCachedLlmSession.llm.get();
+    llm->reset();
 
     MNN::Transformer::MultimodalPrompt multimodalPrompt;
     multimodalPrompt.prompt_template = promptValue;
@@ -732,9 +807,13 @@ Java_cn_chenxuhang_creativeai_ai_mnn_NativeBackedMnnRuntime_nativeGenerateVision
     const std::string generatedText = output.str();
     const auto* context = llm->getContext();
     const int statusCode = context == nullptr ? -999 : static_cast<int>(context->status);
-    MNN::Transformer::Llm::destroy(llm);
+    llm->reset();
 
     if (generatedText.empty()) {
+        if (statusCode != static_cast<int>(MNN::Transformer::LlmStatus::NORMAL_FINISHED) &&
+            statusCode != static_cast<int>(MNN::Transformer::LlmStatus::MAX_TOKENS_FINISHED)) {
+            invalidateCachedSession();
+        }
         std::ostringstream error;
         error << "MNN VL generated empty output. status=" << statusCode;
         return newTextGenerationResult(

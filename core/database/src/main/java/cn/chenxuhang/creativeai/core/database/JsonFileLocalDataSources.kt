@@ -2,6 +2,7 @@ package cn.chenxuhang.creativeai.core.database
 
 import cn.chenxuhang.creativeai.core.model.ActionItem
 import cn.chenxuhang.creativeai.core.model.MemoTask
+import cn.chenxuhang.creativeai.core.model.MemoRemoteAgentTaskRef
 import cn.chenxuhang.creativeai.core.model.ProcessingMode
 import cn.chenxuhang.creativeai.core.model.SourceInputChannel
 import cn.chenxuhang.creativeai.core.model.SourceInputSection
@@ -16,6 +17,24 @@ class JsonFileMemoTaskLocalDataSource(
 ) : MemoTaskLocalDataSource {
     override fun getAll(): List<MemoTask> = synchronized(file) {
         readJsonArray(file).map { item ->
+            val remoteAgentTasks = item.optJSONArray("remoteAgentTasks").toMemoRemoteAgentTaskRefs()
+                .ifEmpty {
+                    val legacyTaskId = item.optString("remoteAgentTaskId").takeIf { it.isNotBlank() }
+                    val legacyStatus = item.optString("remoteAgentTaskStatus").takeIf { it.isNotBlank() }
+                    val legacyTarget = item.optString("remoteAgentTarget").takeIf { it.isNotBlank() }
+                    if (legacyTaskId != null && legacyStatus != null && legacyTarget != null) {
+                        listOf(
+                            MemoRemoteAgentTaskRef(
+                                taskId = legacyTaskId,
+                                targetAgent = legacyTarget,
+                                status = legacyStatus,
+                            ),
+                        )
+                    } else {
+                        emptyList()
+                    }
+                }
+            val latestRemoteAgentTask = remoteAgentTasks.lastOrNull()
             MemoTask(
                 id = item.optString("id"),
                 title = item.optString("title"),
@@ -32,6 +51,10 @@ class JsonFileMemoTaskLocalDataSource(
                 assetRefs = item.optJSONArray("assetRefs").toStringList(),
                 isArchived = item.optBoolean("isArchived", false),
                 archiveFolder = item.optString("archiveFolder").takeIf { it.isNotBlank() },
+                remoteAgentTasks = remoteAgentTasks,
+                remoteAgentTaskId = latestRemoteAgentTask?.taskId,
+                remoteAgentTaskStatus = latestRemoteAgentTask?.status,
+                remoteAgentTarget = latestRemoteAgentTask?.targetAgent,
             )
         }
     }
@@ -66,6 +89,22 @@ class JsonFileMemoTaskLocalDataSource(
                     put("assetRefs", JSONArray(memoTask.assetRefs))
                     put("isArchived", memoTask.isArchived)
                     put("archiveFolder", memoTask.archiveFolder)
+                    put("remoteAgentTasks", JSONArray().apply {
+                        memoTask.remoteAgentTasks.forEach { remoteTask ->
+                            put(
+                                JSONObject().apply {
+                                    put("taskId", remoteTask.taskId)
+                                    put("targetAgent", remoteTask.targetAgent)
+                                    put("status", remoteTask.status)
+                                    put("summary", remoteTask.summary)
+                                    put("updatedAt", remoteTask.updatedAt)
+                                },
+                            )
+                        }
+                    })
+                    put("remoteAgentTaskId", memoTask.remoteAgentTasks.lastOrNull()?.taskId ?: memoTask.remoteAgentTaskId)
+                    put("remoteAgentTaskStatus", memoTask.remoteAgentTasks.lastOrNull()?.status ?: memoTask.remoteAgentTaskStatus)
+                    put("remoteAgentTarget", memoTask.remoteAgentTasks.lastOrNull()?.targetAgent ?: memoTask.remoteAgentTarget)
                 }
             },
         )
@@ -99,6 +138,22 @@ class JsonFileMemoTaskLocalDataSource(
                     put("assetRefs", JSONArray(memoTask.assetRefs))
                     put("isArchived", memoTask.isArchived)
                     put("archiveFolder", memoTask.archiveFolder)
+                    put("remoteAgentTasks", JSONArray().apply {
+                        memoTask.remoteAgentTasks.forEach { remoteTask ->
+                            put(
+                                JSONObject().apply {
+                                    put("taskId", remoteTask.taskId)
+                                    put("targetAgent", remoteTask.targetAgent)
+                                    put("status", remoteTask.status)
+                                    put("summary", remoteTask.summary)
+                                    put("updatedAt", remoteTask.updatedAt)
+                                },
+                            )
+                        }
+                    })
+                    put("remoteAgentTaskId", memoTask.remoteAgentTasks.lastOrNull()?.taskId ?: memoTask.remoteAgentTaskId)
+                    put("remoteAgentTaskStatus", memoTask.remoteAgentTasks.lastOrNull()?.status ?: memoTask.remoteAgentTaskStatus)
+                    put("remoteAgentTarget", memoTask.remoteAgentTasks.lastOrNull()?.targetAgent ?: memoTask.remoteAgentTarget)
                 }
             },
         )
@@ -281,6 +336,27 @@ private fun JSONArray?.toActionItems(): List<ActionItem> {
                     task = item.optString("task"),
                     owner = item.optString("owner"),
                     deadline = item.optString("deadline").takeIf { it.isNotBlank() },
+                ),
+            )
+        }
+    }
+}
+
+private fun JSONArray?.toMemoRemoteAgentTaskRefs(): List<MemoRemoteAgentTaskRef> {
+    if (this == null) return emptyList()
+    return buildList(length()) {
+        for (index in 0 until length()) {
+            val item = optJSONObject(index) ?: continue
+            val taskId = item.optString("taskId").takeIf { it.isNotBlank() } ?: continue
+            val targetAgent = item.optString("targetAgent").takeIf { it.isNotBlank() } ?: continue
+            val status = item.optString("status").takeIf { it.isNotBlank() } ?: continue
+            add(
+                MemoRemoteAgentTaskRef(
+                    taskId = taskId,
+                    targetAgent = targetAgent,
+                    status = status,
+                    summary = item.optString("summary"),
+                    updatedAt = item.optString("updatedAt").takeIf { it.isNotBlank() },
                 ),
             )
         }

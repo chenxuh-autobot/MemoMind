@@ -72,12 +72,14 @@ scripts/setup_mnn_arm64.sh --ndk /path/to/ndk --mnn-root /path/to/MNN --verify
 当前默认模型目录在 App 私有目录下，例如：
 
 ```text
-<app files>/creative_ai/models/qwen-local-1_5b-text/
+<app files>/creative_ai/models/qwen-vl-2b-instruct-mnn/
   tokenizer.txt
   llm.mnn
   llm.mnn.weight
   llm_config.json
   config.json
+  visual.mnn
+  visual.mnn.weight
 ```
 
 当前 `probeModelDirectory()` 会检查：

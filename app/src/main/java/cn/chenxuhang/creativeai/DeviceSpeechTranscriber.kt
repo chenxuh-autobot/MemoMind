@@ -173,10 +173,7 @@ class DeviceSpeechTranscriber(
         audioRecord = null
         runCatching { wavWriter?.abort() }
         wavWriter = null
-        recognizer?.release()
-        recognizer = null
-        vad?.release()
-        vad = null
+        releaseInferenceResources()
     }
 
     private fun runRecognitionLoop(
@@ -219,6 +216,7 @@ class DeviceSpeechTranscriber(
             runCatching { record.release() }
             audioRecord = null
             wavWriter = null
+            releaseInferenceResources()
             isRunning = false
             pendingStop = false
             notifyState()
@@ -266,6 +264,13 @@ class DeviceSpeechTranscriber(
     private fun ensureVad(): Vad {
         vad?.let { return it }
         return createBundledVad(context).also { vad = it }
+    }
+
+    private fun releaseInferenceResources() {
+        recognizer?.release()
+        recognizer = null
+        vad?.release()
+        vad = null
     }
 
     private fun createAudioRecord(): AudioRecord {

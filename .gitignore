@@ -2,6 +2,9 @@
 .idea/
 local.properties
 *.iml
+.DS_Store
+.tmp-*
+*.pyc
 
 build/
 **/build/
@@ -11,6 +14,7 @@ captures/
 *.apk
 *.aab
 artifacts/
+app/libs/*.aar
 
 app/src/main/assets/models/
 app/src/main/assets/asr/
@@ -20,3 +24,9 @@ ai/mnn/src/main/cpp/third_party/mnn/include/
 app/src/main/assets/**/.cache/
 app/src/main/assets/**/*.lock
 app/src/main/assets/**/*.metadata
+
+bridge/.env
+bridge/.codex-bridge/
+bridge/project_registry.json
+**/__pycache__/
+gradle.properties.bak

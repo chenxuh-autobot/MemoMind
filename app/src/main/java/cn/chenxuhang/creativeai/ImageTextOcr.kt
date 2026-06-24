@@ -138,13 +138,14 @@ private fun prepareBitmapForOcr(
     }
     paint.colorFilter = ColorMatrixColorFilter(matrix)
     canvas.drawBitmap(upscaled, 0f, 0f, paint)
-    if (upscaled != source) {
-        upscaled.recycle()
-    }
-    if (softwareSource != source && softwareSource != upscaled) {
-        softwareSource.recycle()
-    }
-    return grayscale.toHighContrastBinary()
+    val binary = grayscale.toHighContrastBinary()
+    // OCR preprocessing creates several large temporary bitmaps. Recycle every
+    // intermediate eagerly so repeated runs do not leak memory and crash.
+    recycleDistinctBitmapsExcept(
+        keep = binary,
+        bitmaps = listOf(source, softwareSource, upscaled, grayscale),
+    )
+    return binary
 }
 
 private fun upscaleIfNeeded(
@@ -162,15 +163,24 @@ private fun upscaleIfNeeded(
 }
 
 private fun Bitmap.toHighContrastBinary(): Bitmap {
-    val result = copy(Bitmap.Config.ARGB_8888, true)
+    val result = if (config == Bitmap.Config.ARGB_8888 && isMutable) {
+        this
+    } else {
+        copy(Bitmap.Config.ARGB_8888, true)
+    }
     val pixels = IntArray(result.width * result.height)
     result.getPixels(pixels, 0, result.width, 0, 0, result.width, result.height)
-    val averageLuma = pixels
-        .map { pixel ->
-            (Color.red(pixel) * 0.299f) + (Color.green(pixel) * 0.587f) + (Color.blue(pixel) * 0.114f)
-        }
-        .average()
-        .toFloat()
+    var lumaSum = 0.0
+    for (pixel in pixels) {
+        lumaSum += (Color.red(pixel) * 0.299f) +
+            (Color.green(pixel) * 0.587f) +
+            (Color.blue(pixel) * 0.114f)
+    }
+    val averageLuma = if (pixels.isNotEmpty()) {
+        (lumaSum / pixels.size).toFloat()
+    } else {
+        128f
+    }
     val threshold = averageLuma.coerceIn(110f, 190f)
     for (index in pixels.indices) {
         val pixel = pixels[index]
@@ -184,6 +194,19 @@ private fun Bitmap.toHighContrastBinary(): Bitmap {
 private fun Bitmap.toSoftwareBitmap(): Bitmap {
     if (config != Bitmap.Config.HARDWARE) return this
     return copy(Bitmap.Config.ARGB_8888, false)
+}
+
+private fun recycleDistinctBitmapsExcept(
+    keep: Bitmap,
+    bitmaps: List<Bitmap>,
+) {
+    val seen = HashSet<Int>()
+    bitmaps.forEach { bitmap ->
+        val identity = System.identityHashCode(bitmap)
+        if (bitmap !== keep && seen.add(identity) && !bitmap.isRecycled) {
+            bitmap.recycle()
+        }
+    }
 }
 
 private fun String.cleanOcrText(): String {

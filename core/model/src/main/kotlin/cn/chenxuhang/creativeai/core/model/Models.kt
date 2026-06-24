@@ -15,6 +15,7 @@ enum class ProcessingMode {
 enum class SourceInputChannel {
     IMAGE_BRIEF,
     OCR_TEXT,
+    DOCUMENT_TEXT,
     AUDIO_TRANSCRIPT,
     SUPPLEMENTAL_TEXT,
 }
@@ -23,6 +24,14 @@ data class SourceInputSection(
     val channel: SourceInputChannel,
     val label: String,
     val content: String,
+)
+
+data class MemoRemoteAgentTaskRef(
+    val taskId: String,
+    val targetAgent: String,
+    val status: String,
+    val summary: String = "",
+    val updatedAt: String? = null,
 )
 
 data class MemoTask(
@@ -38,6 +47,10 @@ data class MemoTask(
     val assetRefs: List<String> = emptyList(),
     val isArchived: Boolean = false,
     val archiveFolder: String? = null,
+    val remoteAgentTasks: List<MemoRemoteAgentTaskRef> = emptyList(),
+    val remoteAgentTaskId: String? = null,
+    val remoteAgentTaskStatus: String? = null,
+    val remoteAgentTarget: String? = null,
 )
 
 data class Attachment(
@@ -77,6 +90,94 @@ data class StructuredMemo(
     val sourceTrace: List<String> = emptyList(),
     val sourceOutline: List<String> = emptyList(),
     val assetRefs: List<String> = emptyList(),
+)
+
+enum class AgentTaskMode {
+    PLAN_ONLY,
+    READ_ONLY,
+    WORKSPACE_WRITE,
+}
+
+enum class AgentTaskStatus {
+    PENDING,
+    RUNNING,
+    WAITING_APPROVAL,
+    DONE,
+    FAILED,
+    CANCELLED,
+}
+
+data class AgentTaskContext(
+    val meetingSummary: String = "",
+    val requirements: List<String> = emptyList(),
+    val constraints: List<String> = emptyList(),
+    val memoSummary: String = "",
+    val memoBackground: String = "",
+    val facts: List<String> = emptyList(),
+    val decisions: List<String> = emptyList(),
+    val actionItems: List<ActionItem> = emptyList(),
+    val risks: List<String> = emptyList(),
+    val tags: List<String> = emptyList(),
+    val sourceOutline: List<String> = emptyList(),
+)
+
+data class AgentTaskPermission(
+    val requireUserApproval: Boolean = true,
+    val approvedForExecution: Boolean = false,
+    val allowCodeWrite: Boolean = false,
+    val allowShellCommand: Boolean = false,
+    val allowGitCommit: Boolean = false,
+    val allowGitPush: Boolean = false,
+    val allowFileDelete: Boolean = false,
+    val allowNetworkAccess: Boolean = false,
+)
+
+data class AgentTaskProgressEvent(
+    val phase: String = "",
+    val message: String = "",
+    val createdAt: String? = null,
+    val level: String = "info",
+)
+
+data class AgentTaskResult(
+    val summary: String = "",
+    val planMarkdown: String = "",
+    val filesToTouch: List<String> = emptyList(),
+    val risks: List<String> = emptyList(),
+    val testSuggestions: List<String> = emptyList(),
+    val rawStdout: String = "",
+    val rawStderr: String = "",
+    val exitCode: Int? = null,
+    val currentPhase: String = "",
+    val progressEvents: List<AgentTaskProgressEvent> = emptyList(),
+)
+
+data class AgentTaskError(
+    val type: String = "",
+    val message: String = "",
+    val detail: String = "",
+)
+
+data class AgentTask(
+    val id: String = "",
+    val userId: String,
+    val sourceApp: String,
+    val sourceTaskId: String? = null,
+    val targetAgent: String,
+    val projectId: String,
+    val taskType: String,
+    val mode: AgentTaskMode = AgentTaskMode.PLAN_ONLY,
+    val goal: String,
+    val prompt: String,
+    val context: AgentTaskContext = AgentTaskContext(),
+    val permission: AgentTaskPermission = AgentTaskPermission(),
+    val status: AgentTaskStatus = AgentTaskStatus.PENDING,
+    val result: AgentTaskResult? = null,
+    val error: AgentTaskError? = null,
+    val claimedBy: String? = null,
+    val claimedAt: String? = null,
+    val createdAt: String? = null,
+    val updatedAt: String? = null,
 )
 
 data class DeviceProfile(
@@ -158,6 +259,9 @@ data class MnnSessionConfig(
     val enableMultimodalPath: Boolean,
     val cpuSmeCoreCount: Int = 2,
     val cpuSme2NeonDivisionRatio: Int = 41,
+    val maxPromptChars: Int = 6_000,
+    val chunkSoftLimitChars: Int = 2_400,
+    val generationMaxNewTokens: Int = 448,
 )
 
 data class ModelProbeResult(

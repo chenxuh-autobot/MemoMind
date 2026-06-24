@@ -1,11 +1,17 @@
 package cn.chenxuhang.creativeai.feature.capture
 
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -48,6 +54,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
@@ -66,6 +73,7 @@ data class CaptureUiState(
     val showTitleRequiredHint: Boolean,
     val imageBriefInput: String,
     val ocrTextInput: String,
+    val documentTextInput: String,
     val transcriptInput: String,
     val notesInput: String,
     val maxImageCount: Int,
@@ -77,6 +85,8 @@ data class CaptureUiState(
     val isRunningImageOcr: Boolean,
     val canRunImageSummary: Boolean,
     val isRunningImageSummary: Boolean,
+    val canReadDocuments: Boolean,
+    val isReadingDocuments: Boolean,
     val canToggleAudioTranscription: Boolean,
     val isPreparingAudioTranscription: Boolean,
     val isRunningAudioTranscription: Boolean,
@@ -93,6 +103,7 @@ fun CaptureRoute(
     onTitleChange: (String) -> Unit,
     onImageBriefChange: (String) -> Unit,
     onOcrTextChange: (String) -> Unit,
+    onDocumentTextChange: (String) -> Unit,
     onTranscriptChange: (String) -> Unit,
     onNotesChange: (String) -> Unit,
     onPickImage: () -> Unit,
@@ -101,26 +112,29 @@ fun CaptureRoute(
     onOpenImageAsset: (String) -> Unit,
     onRunImageSummary: () -> Unit,
     onRunImageOcr: () -> Unit,
+    onReadDocuments: () -> Unit,
     onPickAudio: () -> Unit,
     onClearAudio: () -> Unit,
     onToggleAudioTranscription: () -> Unit,
     onSubmit: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var imageBriefExpanded by rememberSaveable { mutableStateOf(false) }
     var ocrExpanded by rememberSaveable { mutableStateOf(false) }
+    var documentExpanded by rememberSaveable { mutableStateOf(false) }
     var transcriptExpanded by rememberSaveable { mutableStateOf(false) }
     var contextExpanded by rememberSaveable { mutableStateOf(false) }
     Surface(modifier = modifier.fillMaxSize()) {
         LazyColumn(
-            contentPadding = PaddingValues(horizontal = 18.dp, vertical = 20.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
+            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             item {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(
                         text = uiState.headline,
                         style = MaterialTheme.typography.headlineMedium,
-                        letterSpacing = 1.8.sp,
+                        letterSpacing = 0.sp,
                     )
                 }
             }
@@ -141,13 +155,9 @@ fun CaptureRoute(
                         isError = uiState.showTitleRequiredHint,
                         singleLine = true,
                         supportingText = {
-                            Text(
-                                if (uiState.showTitleRequiredHint) {
-                                    "请先填写任务标题，填写后才可以生成结构化纪要。"
-                                } else {
-                                    "用一句话说明这次任务是什么，后续回看会更省时间。"
-                                },
-                            )
+                            if (uiState.showTitleRequiredHint) {
+                                Text("请先填写任务标题。")
+                            }
                         },
                     )
                 }
@@ -155,57 +165,82 @@ fun CaptureRoute(
 
             item {
                 CaptureModuleCard(
-                    title = "图片素材",
+                    title = "图片 / 文档素材",
                     accent = Color(0xFF2F7BF6),
                     icon = Icons.Outlined.Collections,
-                    badge = "最多 ${uiState.maxImageCount} 张",
+                    badge = "最多 ${uiState.maxImageCount} 个",
                 ) {
-                    Text(
-                        text = "可上传多张图片，或直接现场拍摄。MemoMind 会提取图片中的文字内容，供后续纪要整理使用。",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
                     DualActionRow(
                         primaryLabel = if (uiState.selectedImageAssets.isEmpty()) {
-                            "选择图片文件"
+                            "添加素材"
                         } else {
-                            "继续添加图片"
+                            "继续添加"
                         },
                         primaryIcon = Icons.Outlined.ImageSearch,
                         onPrimaryClick = onPickImage,
-                        secondaryLabel = "使用摄像头拍摄图片",
+                        secondaryLabel = "拍摄",
                         secondaryIcon = Icons.Outlined.CameraAlt,
                         onSecondaryClick = onCaptureImage,
                     )
                     if (uiState.selectedImageAssets.isNotEmpty()) {
                         AssetActionList(
-                            title = "已选图片",
+                            title = "已选素材",
                             items = uiState.selectedImageAssets,
                             onOpen = onOpenImageAsset,
                             actionLabel = "查看",
                         )
-                        OutlinedButton(
-                            onClick = onRunImageOcr,
-                            enabled = uiState.canRunImageOcr && !uiState.isRunningImageOcr,
-                            modifier = Modifier.fillMaxWidth(),
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            Text(if (uiState.isRunningImageOcr) "正在识别图片文本..." else "从图片识别文本")
-                        }
-                        OutlinedButton(
-                            onClick = onClearImage,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Text("清除全部图片素材")
+                            OutlinedButton(
+                                onClick = onRunImageSummary,
+                                enabled = uiState.canRunImageSummary && !uiState.isRunningImageSummary,
+                            ) {
+                                Text(if (uiState.isRunningImageSummary) "提炼中..." else "提炼图片")
+                            }
+                            OutlinedButton(
+                                onClick = onRunImageOcr,
+                                enabled = uiState.canRunImageOcr && !uiState.isRunningImageOcr,
+                            ) {
+                                Text(if (uiState.isRunningImageOcr) "识别中..." else "识别图片文字")
+                            }
+                            OutlinedButton(
+                                onClick = onReadDocuments,
+                                enabled = uiState.canReadDocuments && !uiState.isReadingDocuments,
+                            ) {
+                                Text(if (uiState.isReadingDocuments) "读取中..." else "读取文档")
+                            }
+                            OutlinedButton(
+                                onClick = onClearImage,
+                            ) {
+                                Text("清除")
+                            }
                         }
                     }
+                    CollapsibleTextEditor(
+                        title = "图片轻量要点",
+                        value = uiState.imageBriefInput,
+                        expanded = imageBriefExpanded,
+                        onToggle = { imageBriefExpanded = !imageBriefExpanded },
+                        onValueChange = onImageBriefChange,
+                        placeholder = "图片要点会显示在这里。",
+                    )
                     CollapsibleTextEditor(
                         title = "图片识别文本",
                         value = uiState.ocrTextInput,
                         expanded = ocrExpanded,
                         onToggle = { ocrExpanded = !ocrExpanded },
                         onValueChange = onOcrTextChange,
-                        placeholder = "这里显示图片中识别出的文字内容。",
-                        supportingText = "图片文字识别结果会保留在这个模块里，方便单独检查和修正。",
+                        placeholder = "图片中识别出的文字。",
+                    )
+                    CollapsibleTextEditor(
+                        title = "文档读取文本",
+                        value = uiState.documentTextInput,
+                        expanded = documentExpanded,
+                        onToggle = { documentExpanded = !documentExpanded },
+                        onValueChange = onDocumentTextChange,
+                        placeholder = "PDF、Word、PPT 读取出的文字会显示在这里。",
                     )
                 }
             }
@@ -217,11 +252,6 @@ fun CaptureRoute(
                     icon = Icons.Outlined.GraphicEq,
                     badge = "本地识别",
                 ) {
-                    Text(
-                        text = "可选择已有录音，也可直接调用麦克风做端侧转写。中途启动会有短暂准备时间。",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
                     OutlinedButton(
                         onClick = onPickAudio,
                         modifier = Modifier.fillMaxWidth(),
@@ -254,8 +284,7 @@ fun CaptureRoute(
                         expanded = transcriptExpanded,
                         onToggle = { transcriptExpanded = !transcriptExpanded },
                         onValueChange = onTranscriptChange,
-                        placeholder = "麦克风或录音文件提取出的文字会显示在这里。",
-                        supportingText = "音频相关文本只保留在这个模块里，方便单独核对。",
+                        placeholder = "音频转写文字。",
                     )
                 }
             }
@@ -266,16 +295,11 @@ fun CaptureRoute(
                     accent = Color(0xFFE67B16),
                     icon = Icons.Outlined.EditNote,
                 ) {
-                    Text(
-                        text = "强力建议补充该任务的背景、目标、约束等。",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
                     OutlinedTextField(
                         value = uiState.notesInput,
                         onValueChange = onNotesChange,
                         modifier = Modifier.fillMaxWidth(),
-                        minLines = 6,
+                        minLines = 4,
                         label = { Text("补充文字") },
                         placeholder = { Text("例如：这次讨论更关注结论、行动项和负责人。") },
                     )
@@ -301,7 +325,6 @@ fun CaptureRoute(
                         onToggle = { contextExpanded = !contextExpanded },
                         onValueChange = {},
                         placeholder = "填写上面的素材后，这里会自动汇总成本次纪要的完整上下文。",
-                        supportingText = "生成前可以在这里快速检查：图片、音频和补充文字是否都已进入纪要上下文。",
                         readOnly = true,
                     )
                 }
@@ -339,19 +362,19 @@ private fun CollapsibleTextEditor(
     onToggle: () -> Unit,
     onValueChange: (String) -> Unit,
     placeholder: String,
-    supportingText: String,
+    supportingText: String? = null,
     readOnly: Boolean = false,
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(
                     color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.55f),
-                    shape = RoundedCornerShape(16.dp),
+                    shape = RoundedCornerShape(14.dp),
                 )
                 .clickable { onToggle() }
-                .padding(horizontal = 14.dp, vertical = 12.dp),
+                .padding(horizontal = 12.dp, vertical = 9.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -359,7 +382,7 @@ private fun CollapsibleTextEditor(
                 Text(
                     text = title,
                     style = MaterialTheme.typography.titleSmall,
-                    letterSpacing = 0.6.sp,
+                    letterSpacing = 0.sp,
                 )
                 Text(
                     text = if (value.isBlank()) "当前为空" else "当前已有内容",
@@ -377,10 +400,10 @@ private fun CollapsibleTextEditor(
                 value = value,
                 onValueChange = onValueChange,
                 modifier = Modifier.fillMaxWidth(),
-                minLines = 4,
+                minLines = 3,
                 label = { Text(title) },
                 placeholder = { Text(placeholder) },
-                supportingText = { Text(supportingText) },
+                supportingText = supportingText?.let { text -> { Text(text) } },
                 readOnly = readOnly,
             )
         }
@@ -397,26 +420,27 @@ private fun CaptureModuleCard(
 ) {
     ElevatedCard(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(24.dp),
+        shape = RoundedCornerShape(18.dp),
     ) {
         Column(
-            modifier = Modifier.padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Box(
                     modifier = Modifier
-                        .size(42.dp)
-                        .background(accent.copy(alpha = 0.14f), RoundedCornerShape(14.dp)),
+                        .size(34.dp)
+                        .background(accent.copy(alpha = 0.14f), RoundedCornerShape(11.dp)),
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
                         imageVector = icon,
                         contentDescription = title,
                         tint = accent,
+                        modifier = Modifier.size(19.dp),
                     )
                 }
                 Column(
@@ -425,8 +449,8 @@ private fun CaptureModuleCard(
                 ) {
                     Text(
                         text = title,
-                        style = MaterialTheme.typography.titleLarge,
-                        letterSpacing = 1.2.sp,
+                        style = MaterialTheme.typography.titleMedium,
+                        letterSpacing = 0.sp,
                     )
                     badge?.let {
                         Text(
@@ -453,11 +477,13 @@ private fun DualActionRow(
     primaryEnabled: Boolean = true,
     secondaryEnabled: Boolean = true,
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
         OutlinedButton(
             onClick = onPrimaryClick,
             enabled = primaryEnabled,
-            modifier = Modifier.fillMaxWidth(),
         ) {
             Icon(primaryIcon, contentDescription = primaryLabel, modifier = Modifier.size(18.dp))
             Text(
@@ -468,7 +494,6 @@ private fun DualActionRow(
         OutlinedButton(
             onClick = onSecondaryClick,
             enabled = secondaryEnabled,
-            modifier = Modifier.fillMaxWidth(),
         ) {
             Icon(secondaryIcon, contentDescription = secondaryLabel, modifier = Modifier.size(18.dp))
             Text(
@@ -489,16 +514,16 @@ private fun AssetSummaryBlock(
             .fillMaxWidth()
             .background(
                 color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.55f),
-                shape = RoundedCornerShape(16.dp),
+                shape = RoundedCornerShape(14.dp),
             )
-            .padding(14.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+            .padding(10.dp),
+        verticalArrangement = Arrangement.spacedBy(5.dp),
     ) {
         Text(
             text = title,
             style = MaterialTheme.typography.labelLarge,
             color = MaterialTheme.colorScheme.primary,
-            letterSpacing = 0.6.sp,
+            letterSpacing = 0.sp,
         )
         Text(
             text = lines.joinToString("\n"),
@@ -519,21 +544,21 @@ private fun AssetActionList(
             .fillMaxWidth()
             .background(
                 color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.55f),
-                shape = RoundedCornerShape(16.dp),
+                shape = RoundedCornerShape(14.dp),
             )
-            .padding(14.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+            .padding(10.dp),
+        verticalArrangement = Arrangement.spacedBy(7.dp),
     ) {
         Text(
             text = title,
             style = MaterialTheme.typography.labelLarge,
             color = MaterialTheme.colorScheme.primary,
-            letterSpacing = 0.6.sp,
+            letterSpacing = 0.sp,
         )
         items.forEach { item ->
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Icon(
@@ -544,7 +569,7 @@ private fun AssetActionList(
                 )
                 Text(
                     text = item.displayName,
-                    style = MaterialTheme.typography.bodyMedium,
+                    style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.weight(1f),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -593,11 +618,15 @@ private fun AudioToggleButton(
                     color = MaterialTheme.colorScheme.onPrimary,
                 )
             } else {
-                Icon(
-                    imageVector = Icons.Outlined.Mic,
-                    contentDescription = buttonText,
-                    modifier = Modifier.size(18.dp),
-                )
+                if (isRunning) {
+                    RecordingPulseIndicator()
+                } else {
+                    Icon(
+                        imageVector = Icons.Outlined.Mic,
+                        contentDescription = buttonText,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
             }
             Text(
                 text = buttonText,
@@ -607,11 +636,56 @@ private fun AudioToggleButton(
         Text(
             text = if (isPreparing) {
                 "正在连接麦克风与本地 ASR，引擎启动通常需要 1 到 2 秒。"
+            } else if (isRunning) {
+                "正在录音：$modeLabel"
             } else {
                 "当前模式：$modeLabel"
             },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun RecordingPulseIndicator() {
+    val transition = rememberInfiniteTransition(label = "recordingPulse")
+    val pulseScale by transition.animateFloat(
+        initialValue = 0.82f,
+        targetValue = 1.28f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 720),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "recordingPulseScale",
+    )
+    val pulseAlpha by transition.animateFloat(
+        initialValue = 0.35f,
+        targetValue = 0.78f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 720),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "recordingPulseAlpha",
+    )
+    Box(
+        modifier = Modifier.size(20.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(18.dp)
+                .graphicsLayer {
+                    scaleX = pulseScale
+                    scaleY = pulseScale
+                    alpha = pulseAlpha
+                }
+                .background(Color.White.copy(alpha = 0.28f), RoundedCornerShape(9.dp)),
+        )
+        Box(
+            modifier = Modifier
+                .size(9.dp)
+                .background(Color(0xFFFF4D4F), RoundedCornerShape(5.dp)),
         )
     }
 }
@@ -627,6 +701,7 @@ private fun CaptureRoutePreview() {
             showTitleRequiredHint = false,
             imageBriefInput = "白板上写着端侧优先、云端兜底、结构化纪要。",
             ocrTextInput = "推荐技术栈：Qwen3.5-0.8B/2B/4B，MNN。",
+            documentTextInput = "项目介绍：MemoMind 支持多模态素材整理。",
             transcriptInput = "我们先把图片、录音、文字统一成文本上下文，再让本地模型生成纪要。",
             notesInput = "目标是在安卓手机上完成可演示的本地纪要链路。",
             maxImageCount = 8,
@@ -641,6 +716,8 @@ private fun CaptureRoutePreview() {
             isRunningImageOcr = false,
             canRunImageSummary = true,
             isRunningImageSummary = false,
+            canReadDocuments = true,
+            isReadingDocuments = false,
             canToggleAudioTranscription = true,
             isPreparingAudioTranscription = false,
             isRunningAudioTranscription = false,
@@ -653,6 +730,7 @@ private fun CaptureRoutePreview() {
         onTitleChange = {},
         onImageBriefChange = {},
         onOcrTextChange = {},
+        onDocumentTextChange = {},
         onTranscriptChange = {},
         onNotesChange = {},
         onPickImage = {},
@@ -661,6 +739,7 @@ private fun CaptureRoutePreview() {
         onOpenImageAsset = {},
         onRunImageSummary = {},
         onRunImageOcr = {},
+        onReadDocuments = {},
         onPickAudio = {},
         onClearAudio = {},
         onToggleAudioTranscription = {},

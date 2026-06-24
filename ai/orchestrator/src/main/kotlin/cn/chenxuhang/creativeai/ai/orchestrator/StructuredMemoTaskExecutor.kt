@@ -52,13 +52,18 @@ class StructuredMemoTaskExecutor(
         )
         taskLocalDataSource.save(runningTask)
 
+        val preparedSections = prepareSectionsForGeneration(request)
+        val preparedSourceText = composeGenerationSourceText(
+            sections = preparedSections,
+            fallbackSourceText = request.sourceText,
+        )
         val generation = runtime.generateText(
             config = request.sessionConfig,
             prompt = buildPrompt(
-                sourceText = request.sourceText,
-                sourceSections = request.sourceSections,
+                sourceText = preparedSourceText,
+                sourceSections = preparedSections,
             ),
-            maxNewTokens = 448,
+            maxNewTokens = request.sessionConfig.generationMaxNewTokens,
         )
         if (!generation.success) {
             val fallbackMemo = buildFallbackMemo(
@@ -155,6 +160,238 @@ class StructuredMemoTaskExecutor(
             $sectionBlock
             原始内容结束
         """.trimIndent()
+    }
+
+    private fun prepareSectionsForGeneration(
+        request: StructuredMemoTaskRequest,
+    ): List<SourceInputSection> {
+        val normalizedSections = request.sourceSections
+            .map { it.copy(content = it.content.trim()) }
+            .filter { it.content.isNotBlank() }
+        if (normalizedSections.isEmpty()) return emptyList()
+
+        val totalChars = normalizedSections.sumOf { it.content.length }
+        if (totalChars <= request.sessionConfig.maxPromptChars) {
+            return normalizedSections
+        }
+
+        val condensedSections = normalizedSections.map { section ->
+            val desiredLimit = when (section.channel) {
+                SourceInputChannel.AUDIO_TRANSCRIPT,
+                SourceInputChannel.OCR_TEXT,
+                SourceInputChannel.DOCUMENT_TEXT,
+                -> request.sessionConfig.chunkSoftLimitChars
+                else -> request.sessionConfig.maxPromptChars / normalizedSections.size
+            }.coerceAtLeast(800)
+
+            if (section.content.length <= desiredLimit) {
+                section
+            } else {
+                section.copy(
+                    label = "${section.label}（压缩）",
+                    content = condenseSectionContent(
+                        section = section,
+                        config = request.sessionConfig,
+                    ),
+                )
+            }
+        }
+
+        return trimSectionsToPromptBudget(
+            sections = condensedSections,
+            maxPromptChars = request.sessionConfig.maxPromptChars,
+        )
+    }
+
+    private fun condenseSectionContent(
+        section: SourceInputSection,
+        config: MnnSessionConfig,
+    ): String {
+        val chunks = splitTextIntoChunks(
+            text = section.content,
+            softLimitChars = config.chunkSoftLimitChars,
+        )
+        if (chunks.size <= 1) {
+            return heuristicCompactText(section.content, hardLimitChars = config.chunkSoftLimitChars)
+        }
+
+        val chunkSummaries = chunks.mapIndexed { index, chunk ->
+            summarizeChunk(
+                section = section,
+                chunk = chunk,
+                chunkIndex = index,
+                chunkCount = chunks.size,
+                config = config,
+            )
+        }
+        return mergeChunkSummaries(
+            section = section,
+            chunkSummaries = chunkSummaries,
+            config = config,
+        )
+    }
+
+    private fun summarizeChunk(
+        section: SourceInputSection,
+        chunk: String,
+        chunkIndex: Int,
+        chunkCount: Int,
+        config: MnnSessionConfig,
+    ): String {
+        val prompt = """
+            你现在在做长内容预压缩，不是最终纪要。
+            请把下面这段${section.label}提炼成尽量短的中文要点，保留事实、结论、负责人、时间和数字。
+            不要解释，不要输出 JSON，不要输出 Markdown 标题。
+            输出最多 5 行，每行一句。
+            
+            当前片段：${chunkIndex + 1}/$chunkCount
+            内容开始
+            ${chunk.trim()}
+            内容结束
+        """.trimIndent()
+        val result = runtime.generateText(
+            config = config,
+            prompt = prompt,
+            maxNewTokens = 112,
+        )
+        return result.outputText
+            ?.takeIf { result.success }
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?: heuristicCompactText(chunk, hardLimitChars = config.chunkSoftLimitChars / 2)
+    }
+
+    private fun mergeChunkSummaries(
+        section: SourceInputSection,
+        chunkSummaries: List<String>,
+        config: MnnSessionConfig,
+    ): String {
+        var rollingSummary = chunkSummaries.firstOrNull().orEmpty()
+        if (chunkSummaries.size == 1) return rollingSummary
+
+        chunkSummaries.drop(1).forEach { nextSummary ->
+            val prompt = """
+                你现在在合并长内容摘要，不是最终纪要。
+                请把两段${section.label}摘要合并成更短的统一版本，去掉重复，保留最重要的事实、结论、负责人、时间和数字。
+                不要解释，不要输出 JSON。
+                输出最多 8 行，每行一句。
+                
+                已有摘要：
+                ${rollingSummary.trim()}
+                
+                新片段摘要：
+                ${nextSummary.trim()}
+            """.trimIndent()
+            val merged = runtime.generateText(
+                config = config,
+                prompt = prompt,
+                maxNewTokens = 128,
+            )
+            rollingSummary = merged.outputText
+                ?.takeIf { merged.success }
+                ?.trim()
+                ?.takeIf { it.isNotBlank() }
+                ?: listOf(rollingSummary, nextSummary)
+                    .joinToString("\n")
+                    .let { heuristicCompactText(it, hardLimitChars = config.maxPromptChars / 2) }
+        }
+        return heuristicCompactText(
+            text = rollingSummary,
+            hardLimitChars = config.maxPromptChars / 2,
+        )
+    }
+
+    private fun splitTextIntoChunks(
+        text: String,
+        softLimitChars: Int,
+    ): List<String> {
+        val normalizedParagraphs = text
+            .lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .toList()
+        if (normalizedParagraphs.isEmpty()) return emptyList()
+
+        val chunks = mutableListOf<String>()
+        val current = StringBuilder()
+        normalizedParagraphs.forEach { paragraph ->
+            if (current.isNotEmpty() && current.length + paragraph.length + 1 > softLimitChars) {
+                chunks += current.toString().trim()
+                current.clear()
+            }
+            if (paragraph.length <= softLimitChars) {
+                if (current.isNotEmpty()) current.append('\n')
+                current.append(paragraph)
+            } else {
+                paragraph.chunked(softLimitChars).forEach { slice ->
+                    if (current.isNotEmpty()) {
+                        chunks += current.toString().trim()
+                        current.clear()
+                    }
+                    chunks += slice.trim()
+                }
+            }
+        }
+        if (current.isNotEmpty()) {
+            chunks += current.toString().trim()
+        }
+        return chunks.filter { it.isNotBlank() }
+    }
+
+    private fun heuristicCompactText(
+        text: String,
+        hardLimitChars: Int,
+    ): String {
+        val lines = text
+            .lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .map { line -> line.replace(Regex("\\s+"), " ") }
+            .distinct()
+            .toList()
+        if (lines.isEmpty()) return ""
+
+        val kept = mutableListOf<String>()
+        var charCount = 0
+        for (line in lines) {
+            val projected = charCount + line.length + if (kept.isEmpty()) 0 else 1
+            if (projected > hardLimitChars && kept.isNotEmpty()) break
+            kept += line
+            charCount = projected
+            if (kept.size >= 8) break
+        }
+        return kept.joinToString(separator = "\n")
+    }
+
+    private fun trimSectionsToPromptBudget(
+        sections: List<SourceInputSection>,
+        maxPromptChars: Int,
+    ): List<SourceInputSection> {
+        val totalChars = sections.sumOf { it.label.length + it.content.length + 8 }
+        if (totalChars <= maxPromptChars) return sections
+
+        val budgetPerSection = (maxPromptChars / sections.size).coerceAtLeast(600)
+        return sections.map { section ->
+            val trimmed = heuristicCompactText(
+                text = section.content,
+                hardLimitChars = budgetPerSection,
+            )
+            section.copy(content = trimmed.ifBlank { section.content.take(budgetPerSection) })
+        }
+    }
+
+    private fun composeGenerationSourceText(
+        sections: List<SourceInputSection>,
+        fallbackSourceText: String,
+    ): String {
+        if (sections.isEmpty()) return fallbackSourceText.trim()
+        return buildString {
+            sections.forEachIndexed { index, section ->
+                appendLine("[${section.label}]")
+                appendLine(section.content.trim())
+                if (index != sections.lastIndex) appendLine()
+            }
+        }.trim()
     }
 
     private fun buildRepairPrompt(
@@ -587,6 +824,7 @@ private fun inferTagsFromRequest(
             when (section.channel) {
                 SourceInputChannel.IMAGE_BRIEF -> "图片"
                 SourceInputChannel.OCR_TEXT -> "OCR"
+                SourceInputChannel.DOCUMENT_TEXT -> "文档"
                 SourceInputChannel.AUDIO_TRANSCRIPT -> "录音"
                 SourceInputChannel.SUPPLEMENTAL_TEXT -> "文字"
             }
